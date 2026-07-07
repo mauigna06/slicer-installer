@@ -118,22 +118,29 @@ if ($existing) {
 }
 
 # Resolve the Girder item id behind the download endpoint so we can fetch the
-# publisher's checksum. Best-effort: on any failure we fall back to an
-# unverified download rather than blocking the install.
+# publisher's checksum. The endpoint answers with a 302 to a .../bitstream/<id>
+# URL; we read that Location without following it.
+#
+# We use HttpWebRequest with AllowAutoRedirect disabled (as Save-UrlWithProgress
+# does) rather than `Invoke-WebRequest -MaximumRedirection 0`: on Windows
+# PowerShell 5.1 the latter *throws* on a 3xx, and the resulting exception has no
+# .Response property, so introspecting it under Set-StrictMode aborts the script.
+# GetResponse() instead returns 3xx responses (only 4xx/5xx throw), giving one
+# code path that behaves the same on Windows PowerShell 5.1 and PowerShell 7.
+# Best-effort: on any failure we fall back to an unverified download rather than
+# blocking the install.
 function Resolve-SlicerItemId {
     param([string]$Url)
     $loc = $null
     try {
-        $resp = Invoke-WebRequest -Uri $Url -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop
-        if ($resp.Headers.ContainsKey('Location')) { $loc = $resp.Headers['Location'] }
+        $req = [Net.HttpWebRequest]::Create($Url)
+        $req.AllowAutoRedirect = $false
+        $req.UserAgent = 'slicer-installer (PowerShell)'
+        $resp = $req.GetResponse()
+        try { $loc = [string]$resp.Headers['Location'] } finally { $resp.Dispose() }
     } catch {
-        $r = $_.Exception.Response
-        if ($r) {
-            try { $loc = [string]$r.Headers.Location } catch {}
-            if (-not $loc) { try { $loc = $r.Headers['Location'] } catch {} }
-        }
+        $loc = $null
     }
-    $loc = [string]$loc
     if ($loc -match '/bitstream/([0-9a-fA-F]+)') { return $Matches[1] }
     return $null
 }

@@ -22,9 +22,11 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-# Invoke-WebRequest's progress bar makes large downloads crawl in Windows
-# PowerShell; disabling it speeds the ~250 MB download up dramatically.
-$ProgressPreference = 'SilentlyContinue'
+# Keep the progress stream enabled so our own download bar (Save-UrlWithProgress)
+# renders. We stream the ~250 MB package ourselves rather than using
+# Invoke-WebRequest -OutFile, whose built-in bar would otherwise cripple the
+# download speed in Windows PowerShell.
+$ProgressPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -144,6 +146,53 @@ function Get-SlicerSha512 {
     } catch { return $null }
 }
 
+# Download a URL to a file while showing a live progress bar. We stream the body
+# ourselves in large chunks instead of using `Invoke-WebRequest -OutFile`: its
+# built-in progress bar throttles the ~250 MB transfer to a crawl in Windows
+# PowerShell, whereas streaming stays fast AND keeps the user informed.
+function Save-UrlWithProgress {
+    param(
+        [Parameter(Mandatory)] [string]$Url,
+        [Parameter(Mandatory)] [string]$OutFile
+    )
+
+    $req = [Net.HttpWebRequest]::Create($Url)
+    $req.AllowAutoRedirect = $true
+    $req.UserAgent = 'slicer-installer (PowerShell)'
+    $resp   = $req.GetResponse()
+    $total  = [int64]$resp.ContentLength
+    $stream = $resp.GetResponseStream()
+    $file   = [IO.File]::Create($OutFile)
+    try {
+        $buffer   = [byte[]]::new(1MB)
+        $read     = [int64]0
+        $lastTick = 0
+        while (($n = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $file.Write($buffer, 0, $n)
+            $read += $n
+            # Refresh the bar at most ~10x/sec so Write-Progress never becomes the
+            # bottleneck on a fast connection.
+            $now = [Environment]::TickCount
+            if ($now - $lastTick -ge 100) {
+                $lastTick = $now
+                if ($total -gt 0) {
+                    Write-Progress -Activity 'Downloading 3D Slicer' `
+                        -Status ("{0:N1} / {1:N1} MB" -f ($read / 1MB), ($total / 1MB)) `
+                        -PercentComplete ([int](($read * 100) / $total))
+                } else {
+                    Write-Progress -Activity 'Downloading 3D Slicer' `
+                        -Status ("{0:N1} MB" -f ($read / 1MB))
+                }
+            }
+        }
+    } finally {
+        Write-Progress -Activity 'Downloading 3D Slicer' -Completed
+        $file.Dispose()
+        $stream.Dispose()
+        $resp.Dispose()
+    }
+}
+
 $installer = Join-Path $env:TEMP ("Slicer-" + [guid]::NewGuid().ToString('N') + ".exe")
 
 try {
@@ -152,7 +201,7 @@ try {
     $source   = if ($itemId) { "$packagesApi/item/$itemId/download" } else { $downloadUrl }
 
     Write-Step "Downloading 3D Slicer for Windows..."
-    Invoke-WebRequest -Uri $source -OutFile $installer -UseBasicParsing
+    Save-UrlWithProgress -Url $source -OutFile $installer
 
     if ($expected) {
         $actual = (Get-FileHash -Path $installer -Algorithm SHA512).Hash.ToLower()

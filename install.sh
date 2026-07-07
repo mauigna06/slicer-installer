@@ -2,7 +2,7 @@
 # 3D Slicer one-line installer for Linux and macOS.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/<you>/slicer-installer/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | sh
 #
 # What it does:
 #   * Preflights required tools and (on Linux) installs Slicer's runtime dependencies.

@@ -2,7 +2,7 @@
     3D Slicer one-line installer for Windows.
 
     Usage (PowerShell):
-        irm https://raw.githubusercontent.com/<you>/slicer-installer/main/install.ps1 | iex
+        irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
     What it does:
         * Downloads the latest STABLE Slicer installer from the official server.

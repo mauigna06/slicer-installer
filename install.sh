@@ -102,14 +102,23 @@ require_tools() {
 }
 
 # Download a URL to a file over enforced HTTPS/TLS 1.2, with retries.
+# The live progress bar is shown only when stderr is an interactive terminal.
+# When output is piped, redirected, or logged, the terminal never collapses the
+# bar's carriage returns, so each update would append instead of overwrite and
+# flood the console with '#' characters (burying real error messages). In that
+# case we stay quiet but keep error reporting via --show-error / no -q suppression.
 download() {
   if have curl; then
+    if [ -t 2 ]; then progress='--progress-bar'; else progress='--silent --show-error'; fi
+    # shellcheck disable=SC2086
     curl --fail --location --proto '=https' --tlsv1.2 \
          --retry 3 --retry-delay 2 --retry-connrefused \
-         --progress-bar --output "$2" "$1"
+         $progress --output "$2" "$1"
   elif have wget; then
+    if [ -t 2 ]; then progress='--show-progress'; else progress=''; fi
+    # shellcheck disable=SC2086
     wget --https-only --secure-protocol=TLSv1_2 --tries=3 --timeout=30 \
-         --show-progress -qO "$2" "$1"
+         $progress -qO "$2" "$1"
   else
     err "Neither curl nor wget is available; cannot download Slicer."
   fi

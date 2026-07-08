@@ -11,15 +11,18 @@
 #   * Linux : extracts the tarball into ~/.local/opt, links a launcher into
 #             ~/.local/bin, adds a desktop menu entry, and prints — but never
 #             runs — the command that installs Slicer's runtime libraries.
-#   * macOS : mounts the .dmg and copies Slicer.app into /Applications.
+#   * macOS : mounts the .dmg and copies Slicer.app into ~/Applications.
 #
-# On Linux this never asks for root. Everything lands under $HOME, and the
-# system libraries Slicer needs are left for you to install (or not) afterwards.
+# This never asks for root. Everything lands under $HOME: on Linux the system
+# libraries Slicer needs are left for you to install (or not) afterwards; on
+# macOS the app goes to ~/Applications, which LaunchServices indexes just like
+# /Applications, rather than to the root-owned system directory.
 #
 # Environment overrides:
 #   SLICER_STABILITY     release (default) | nightly | any
 #   SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
-#   SLICER_INSTALL_DIR   Linux only: where to unpack Slicer (default: ~/.local/opt)
+#   SLICER_INSTALL_DIR   where to install Slicer; must be writable without root
+#                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
 #   NO_COLOR             set to disable colored output
 #
 # Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
@@ -133,16 +136,6 @@ fetch() {
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$1"
   elif have wget; then
     wget --https-only --secure-protocol=TLSv1_2 -qO- "$1"
-  fi
-}
-
-as_root() {
-  if [ "$(id -u)" -eq 0 ]; then
-    "$@"
-  elif have sudo; then
-    sudo "$@"
-  else
-    err "This step requires root but 'sudo' is not available: $*"
   fi
 }
 
@@ -323,6 +316,11 @@ install_linux() {
 install_macos() {
   require_tools hdiutil
 
+  # ~/Applications, not /Applications: the latter is root:admin, so writing to it
+  # would need sudo for any standard or MDM-managed user. LaunchServices indexes
+  # both, so Launchpad, Spotlight and `open -a` find the app either way.
+  DEST="${SLICER_INSTALL_DIR:-$HOME/Applications}"
+
   # The download server ships an Intel (amd64) build; it runs natively on Intel
   # Macs and via Rosetta 2 on Apple Silicon.
   if [ "$(uname -m)" = "arm64" ] && ! /usr/bin/pgrep -q oahd 2>/dev/null; then
@@ -330,12 +328,17 @@ install_macos() {
     warn "If Slicer won't launch, install it with: softwareupdate --install-rosetta --agree-to-license"
   fi
 
-  # Stop any running instance so /Applications can be replaced cleanly.
+  # Stop any running instance so the bundle can be replaced cleanly.
   if /usr/bin/pgrep -x Slicer >/dev/null 2>&1; then
     log "Stopping running Slicer instance…"
     /usr/bin/pkill -x Slicer 2>/dev/null || true
     sleep 1
   fi
+
+  mkdir -p "$DEST" || err "Could not create $DEST."
+  # Fail loudly here rather than half-way through the copy. Only reachable when
+  # SLICER_INSTALL_DIR points somewhere root-owned; the default is under $HOME.
+  [ -w "$DEST" ] || err "$DEST is not writable. Set SLICER_INSTALL_DIR to a directory you own."
 
   TMP="$(mktemp -d)"
   MNT="$TMP/mnt"
@@ -354,16 +357,27 @@ install_macos() {
   app="$(/usr/bin/find "$MNT" -maxdepth 1 -name '*.app' | head -n1)"
   [ -n "$app" ] || err "No .app bundle found inside the disk image."
 
-  dest="/Applications/$(basename "$app")"
-  log "Installing $(basename "$app") to /Applications…"
-  rm -rf "$dest" 2>/dev/null || as_root rm -rf "$dest"
-  cp -R "$app" /Applications/ 2>/dev/null || as_root cp -R "$app" /Applications/
+  appname="$(basename "$app")"
+  dest="$DEST/$appname"
+  log "Installing $appname to $DEST…"
+  rm -rf "$dest" || err "Could not remove the existing $dest. Remove it manually and re-run."
+  cp -R "$app" "$DEST/"
 
   # Best-effort: clear the quarantine flag so Gatekeeper lets it open.
+  # curl and wget don't set com.apple.quarantine, so this is usually a no-op.
   xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
 
   log "Installed to: $dest"
-  log "Launch it from Launchpad/Applications, or run: ${C_GREEN}open -a Slicer${C_RESET}"
+
+  # A copy in /Applications shadows this one: `open -a Slicer` resolves through
+  # LaunchServices by bundle id, and may well pick the other install.
+  sys_app="/Applications/$appname"
+  if [ "$dest" != "$sys_app" ] && [ -e "$sys_app" ]; then
+    warn "Another copy exists at $sys_app; 'open -a Slicer' may launch that one instead."
+    warn "Remove it (sudo rm -rf '$sys_app') or open this one directly: open '$dest'"
+  fi
+
+  log "Launch it from Launchpad/Spotlight, or run: ${C_GREEN}open -a Slicer${C_RESET}"
 }
 
 # ---------------------------------------------------------------------------- #

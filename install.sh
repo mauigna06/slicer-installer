@@ -5,18 +5,21 @@
 #   curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | sh
 #
 # What it does:
-#   * Preflights required tools and (on Linux) installs Slicer's runtime dependencies.
+#   * Preflights required tools.
 #   * Downloads the latest STABLE Slicer package from the official server.
 #   * Verifies the download against the publisher's SHA-512 checksum.
 #   * Linux : extracts the tarball into ~/.local/opt, links a launcher into
-#             ~/.local/bin, and adds a desktop menu entry.
+#             ~/.local/bin, adds a desktop menu entry, and prints — but never
+#             runs — the command that installs Slicer's runtime libraries.
 #   * macOS : mounts the .dmg and copies Slicer.app into /Applications.
+#
+# On Linux this never asks for root. Everything lands under $HOME, and the
+# system libraries Slicer needs are left for you to install (or not) afterwards.
 #
 # Environment overrides:
 #   SLICER_STABILITY     release (default) | nightly | any
 #   SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
 #   SLICER_INSTALL_DIR   Linux only: where to unpack Slicer (default: ~/.local/opt)
-#   SLICER_SKIP_DEPS     set to 1 to skip Linux dependency installation
 #   NO_COLOR             set to disable colored output
 #
 # Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
@@ -203,46 +206,48 @@ download_verified() {
 # ---------------------------------------------------------------------------- #
 # Linux
 # ---------------------------------------------------------------------------- #
-install_linux_deps() {
-  if [ "${SLICER_SKIP_DEPS:-0}" = "1" ]; then
-    log "SLICER_SKIP_DEPS=1 set; skipping dependency installation."
-    return 0
-  fi
-  if [ "$(id -u)" -ne 0 ] && ! have sudo; then
-    warn "No root privileges and 'sudo' not found; skipping dependency installation."
-    warn "If Slicer fails to start, install its runtime libraries manually (see docs)."
-    return 0
-  fi
+# Slicer links against a handful of system libraries that we deliberately do NOT
+# install. Doing so needs root, and asking a `curl | sh` script for sudo is a far
+# bigger ask than the install itself — the whole point is that this script only
+# ever writes under $HOME. So print the command for the detected package manager
+# and let the user decide whether to run it.
+print_deps_hint() {
+  if [ "$(id -u)" -eq 0 ]; then sudo_prefix=''; else sudo_prefix='sudo '; fi
 
   if have apt-get; then
-    log "Installing runtime dependencies with apt-get (may prompt for sudo)…"
-    as_root apt-get update -y
     # Common Debian/Ubuntu runtime libraries required by Slicer.
     pkgs="libglu1-mesa libpulse-mainloop-glib0 libnss3 qt5dxcb-plugin libsm6"
     # ALSA lib was renamed during the 64-bit time_t transition (Ubuntu 24.04+).
+    # apt-cache reads local package lists only, so this needs no privileges.
     if apt-cache show libasound2t64 >/dev/null 2>&1; then
       pkgs="$pkgs libasound2t64"
     else
       pkgs="$pkgs libasound2"
     fi
-    # shellcheck disable=SC2086
-    as_root apt-get install -y $pkgs
+    cmd="${sudo_prefix}apt-get install -y $pkgs"
   elif have dnf; then
-    log "Installing runtime dependencies with dnf (may prompt for sudo)…"
-    as_root dnf install -y \
-      mesa-libGLU mesa-libGL libnsl libXrender pulseaudio-libs-glib2 nss \
-      libXcomposite libXdamage libXrandr ftgl libXcursor libXi libXtst \
-      alsa-lib qt5-qtx11extras
+    pkgs="mesa-libGLU mesa-libGL libnsl libXrender pulseaudio-libs-glib2 nss"
+    pkgs="$pkgs libXcomposite libXdamage libXrandr ftgl libXcursor libXi libXtst"
+    pkgs="$pkgs alsa-lib qt5-qtx11extras"
+    cmd="${sudo_prefix}dnf install -y $pkgs"
   elif have pacman; then
-    warn "Arch Linux detected. A prebuilt AUR package (3dslicer-bin) is also available."
-    log "Installing common runtime libraries with pacman…"
-    as_root pacman -Sy --needed --noconfirm \
-      glu nss alsa-lib libxrender libxcomposite libxdamage libxrandr \
-      libxcursor libxi libxtst ftgl || \
-      warn "Some packages could not be installed automatically; install them manually if Slicer fails to start."
+    pkgs="glu nss alsa-lib libxrender libxcomposite libxdamage libxrandr"
+    pkgs="$pkgs libxcursor libxi libxtst ftgl"
+    cmd="${sudo_prefix}pacman -S --needed $pkgs"
   else
-    warn "Unrecognized package manager: skipping dependency installation."
-    warn "Install Slicer's runtime dependencies manually (see the Slicer docs)."
+    warn "Unrecognized package manager. If Slicer fails to start, install its"
+    warn "runtime libraries manually (see the Slicer docs)."
+    return 0
+  fi
+
+  printf '\n'
+  log "Slicer needs a few system libraries. Most desktops already have them; if"
+  log "Slicer fails to start, install them with:"
+  printf '\n    %s%s%s\n' "$C_GREEN" "$cmd" "$C_RESET"
+
+  if have pacman; then
+    printf '\n'
+    log "Arch Linux: a prebuilt AUR package (3dslicer-bin) is available as an alternative."
   fi
 }
 
@@ -277,7 +282,6 @@ EOF
 
 install_linux() {
   require_tools tar
-  install_linux_deps
 
   DEST="${SLICER_INSTALL_DIR:-$HOME/.local/opt}"
   BINDIR="$HOME/.local/bin"
@@ -378,6 +382,10 @@ main() {
   esac
 
   log "${C_GREEN}3D Slicer installation complete.${C_RESET}"
+
+  # Printed last so the one thing that may still need the user's attention —
+  # and their sudo password — is the last thing they read.
+  if [ "$OS" = Linux ]; then print_deps_hint; fi
 }
 
 main "$@"

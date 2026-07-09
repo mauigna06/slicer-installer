@@ -264,7 +264,12 @@ install_desktop_entry() {
   desktop_file="$apps_dir/slicer.desktop"
   mkdir -p "$apps_dir"
 
-  icon=$(find "$appdir" -maxdepth 3 -iname 'slicer*.png' 2>/dev/null | head -n1 || true)
+  # Prefer Slicer's official desktop icon. It lives deep in the tree
+  # (lib/Slicer-<ver>/qt-scripted-modules/Resources/docroot/images) and is named
+  # 3DSlicer-DesktopIcon.png, so neither the old maxdepth nor the slicer*.png glob
+  # would ever reach it. Fall back to any slicer*.png, then to the Slicer binary.
+  icon=$(find "$appdir" -type f -name '3DSlicer-DesktopIcon.png' 2>/dev/null | head -n1 || true)
+  [ -n "$icon" ] || icon=$(find "$appdir" -maxdepth 3 -iname 'slicer*.png' 2>/dev/null | head -n1 || true)
   [ -n "$icon" ] || icon="$appdir/Slicer"
 
   cat > "$desktop_file" <<EOF

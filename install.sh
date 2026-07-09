@@ -18,11 +18,17 @@
 # macOS the app goes to ~/Applications, which LaunchServices indexes just like
 # /Applications, rather than to the root-owned system directory.
 #
+# When the version being installed is already installed, you are asked whether to
+# abort, reinstall over it, or install it into another directory so both copies
+# can live side by side.
+#
 # Environment overrides:
 #   SLICER_STABILITY     release (default) | nightly | any
 #   SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
 #   SLICER_INSTALL_DIR   where to install Slicer; must be writable without root
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
+#   SLICER_ON_EXISTING   what to do when that version is already installed:
+#                        prompt (default) | abort | reinstall
 #   NO_COLOR             set to disable colored output
 #
 # Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
@@ -34,6 +40,7 @@ set -eu
 
 SLICER_STABILITY="${SLICER_STABILITY:-release}"
 SLICER_VERSION="${SLICER_VERSION:-}"
+SLICER_ON_EXISTING="${SLICER_ON_EXISTING:-prompt}"
 BASE_URL="https://download.slicer.org/download"
 PACKAGES_API="https://slicer-packages.kitware.com/api/v1"
 
@@ -42,6 +49,13 @@ C_BLUE='' C_YELLOW='' C_RED='' C_GREEN='' C_RESET=''
 
 # Set by download_verified() to the path of the verified package to install.
 DL_PKG=''
+
+# Set by resolve_package(): what the server says about the package to install.
+# Everything but PKG_URL is empty when the metadata endpoint is unreachable.
+PKG_ITEM_ID='' PKG_SHA='' PKG_VERSION='' PKG_ARCH='' PKG_URL=''
+
+# Set by ask() to the line the user typed.
+ANSWER=''
 
 # ---------------------------------------------------------------------------- #
 # helpers
@@ -153,20 +167,39 @@ resolve_item_id() {
   esac
 }
 
-# Extract the publisher's SHA-512 for a given item id (empty if unavailable).
-get_sha512() {
-  meta=$(fetch "$PACKAGES_API/item/$1" 2>/dev/null || true)
-  printf '%s' "$meta" \
-    | grep -oE '"sha512"[[:space:]]*:[[:space:]]*"[a-f0-9]{128}"' \
-    | grep -oE '[a-f0-9]{128}' | head -n1
+# Extract the string value of a JSON field from the metadata blob $1 ($2 = key).
+# Prints nothing when the key is absent.
+json_field() {
+  printf '%s' "$1" \
+    | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+    | head -n1 \
+    | sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
 }
 
-# Extract the human-readable version for a given item id (empty if unavailable).
-get_version() {
-  meta=$(fetch "$PACKAGES_API/item/$1" 2>/dev/null || true)
-  printf '%s' "$meta" \
-    | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' \
-    | head -n1 | grep -oE '"[^"]+"$' | tr -d '"'
+# Ask the download server which package it would serve for <os>, then read that
+# package's metadata: its checksum, version and architecture. Knowing the
+# version and architecture up front is what lets us tell whether this exact
+# build is already installed without downloading half a gigabyte to find out.
+resolve_package() {
+  os="$1"
+  PKG_URL="$BASE_URL?os=$os&stability=$SLICER_STABILITY"
+  [ -n "$SLICER_VERSION" ] && PKG_URL="$PKG_URL&version=$SLICER_VERSION"
+
+  PKG_ITEM_ID=$(resolve_item_id "$PKG_URL")
+  PKG_SHA='' PKG_VERSION='' PKG_ARCH=''
+  [ -n "$PKG_ITEM_ID" ] || return 0
+
+  meta=$(fetch "$PACKAGES_API/item/$PKG_ITEM_ID" 2>/dev/null || true)
+  PKG_SHA=$(json_field "$meta" sha512)
+  PKG_VERSION=$(json_field "$meta" version)
+  PKG_ARCH=$(json_field "$meta" arch)
+
+  # A digest we can't recognize is worse than no digest at all: it would fail
+  # every comparison and abort an otherwise sound download.
+  case "$PKG_SHA" in *[!a-f0-9]*) PKG_SHA='' ;; esac
+  [ "${#PKG_SHA}" -eq 128 ] || PKG_SHA=''
+
+  PKG_URL="$PACKAGES_API/item/$PKG_ITEM_ID/download"
 }
 
 # Compute the SHA-512 of a file, printing nothing when no tool is available.
@@ -197,22 +230,12 @@ cached_download_valid() {
   [ -n "$actual" ] && [ "$actual" = "$2" ]
 }
 
-# Download the package for an OS, verifying its checksum when possible and
-# reusing a previously downloaded copy from the cache when it still matches.
-# $1 is the OS token (linux|macosx); $2 is a throwaway path used only when the
-# cache is unusable. Sets the global DL_PKG to the verified package's path.
+# Download the package resolved by resolve_package(), verifying its checksum when
+# possible and reusing a previously downloaded copy from the cache when it still
+# matches. $1 is the OS token (linux|macosx); $2 is a throwaway path used only
+# when the cache is unusable. Sets the global DL_PKG to the verified package.
 download_verified() {
   os="$1"; tmp_out="$2"
-  dl_url="$BASE_URL?os=$os&stability=$SLICER_STABILITY"
-  [ -n "$SLICER_VERSION" ] && dl_url="$dl_url&version=$SLICER_VERSION"
-
-  item_id=$(resolve_item_id "$dl_url")
-  sha=''; version=''; src_url="$dl_url"
-  if [ -n "$item_id" ]; then
-    sha=$(get_sha512 "$item_id")
-    version=$(get_version "$item_id")
-    src_url="$PACKAGES_API/item/$item_id/download"
-  fi
 
   case "$os" in
     linux)  ext='tar.gz' ;;
@@ -225,13 +248,13 @@ download_verified() {
   # resolved version we can't name the file stably, so caching is skipped.
   cache_file=''
   cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/slicer-installer"
-  if [ -n "$version" ] && mkdir -p "$cache_dir" 2>/dev/null && [ -w "$cache_dir" ]; then
-    cache_file="$cache_dir/Slicer-$version-$os.$ext"
+  if [ -n "$PKG_VERSION" ] && mkdir -p "$cache_dir" 2>/dev/null && [ -w "$cache_dir" ]; then
+    cache_file="$cache_dir/Slicer-$PKG_VERSION-$os.$ext"
   fi
 
   # Reuse the cached package when it is present and still passes verification.
-  if [ -n "$cache_file" ] && [ -n "$sha" ] && cached_download_valid "$cache_file" "$sha"; then
-    log "Using cached 3D Slicer $version ($os)."
+  if [ -n "$cache_file" ] && [ -n "$PKG_SHA" ] && cached_download_valid "$cache_file" "$PKG_SHA"; then
+    log "Using cached 3D Slicer $PKG_VERSION ($os)."
     DL_PKG="$cache_file"
     return 0
   fi
@@ -239,19 +262,102 @@ download_verified() {
   # Download into the cache when we have a stable name for it (so the next run
   # can reuse it), otherwise into the throwaway temp path.
   out="${cache_file:-$tmp_out}"
-  if [ -n "$version" ]; then
-    log "Downloading 3D Slicer $version ($os)…"
+  if [ -n "$PKG_VERSION" ]; then
+    log "Downloading 3D Slicer $PKG_VERSION ($os)…"
   else
     log "Downloading 3D Slicer ($os)…"
   fi
-  download "$src_url" "$out"
+  download "$PKG_URL" "$out"
 
-  if [ -n "$sha" ]; then
-    verify_sha512 "$out" "$sha"
+  if [ -n "$PKG_SHA" ]; then
+    verify_sha512 "$out" "$PKG_SHA"
   else
     warn "Could not obtain a checksum from the server; skipping verification."
   fi
   DL_PKG="$out"
+}
+
+# ---------------------------------------------------------------------------- #
+# existing installations
+# ---------------------------------------------------------------------------- #
+# True when there is a terminal to prompt on. Under `curl | sh` stdin is the
+# script itself, so /dev/tty is the only way to reach the user — and it cannot be
+# opened at all in CI, in containers, or under `sh -c`, where asking would hang.
+# `true` rather than `:`, because a failed redirect on a special builtin exits.
+tty_available() { { true < /dev/tty; } 2>/dev/null; }
+
+# Print the prompt $1 on the terminal and read one line into ANSWER.
+# Returns 1 at end of input, e.g. when the user presses Ctrl-D.
+ask() {
+  printf '%s' "$1" > /dev/tty
+  read -r ANSWER < /dev/tty || return 1
+}
+
+# Ask for another directory to install into and point DEST at it. A leading ~ is
+# expanded, and directories we cannot write to are rejected up front: this
+# installer never asks for root, so it cannot recover from that later.
+prompt_install_dir() {
+  while true; do
+    ask 'Install directory: ' || { printf '\n' > /dev/tty; err "No directory given."; }
+    case "$ANSWER" in
+      '')    printf '  Please enter a path.\n' > /dev/tty; continue ;;
+      '~')   ANSWER="$HOME" ;;
+      '~/'*) ANSWER="$HOME/${ANSWER#\~/}" ;;
+    esac
+    if ! mkdir -p "$ANSWER" 2>/dev/null || [ ! -w "$ANSWER" ]; then
+      printf '  Cannot write to %s — pick another directory.\n' "$ANSWER" > /dev/tty
+      continue
+    fi
+    DEST="$ANSWER"
+    log "Installing into $DEST instead."
+    return 0
+  done
+}
+
+# The version we are about to install already occupies $2 ($1 names it for the
+# user). Decide what to do about it.
+#
+# Returns 0 when the caller should go ahead and install into the current DEST,
+# and 1 once DEST points at a directory the user picked instead — which the
+# caller must re-check, since that directory may hold this version too.
+# Never returns when the user aborts.
+resolve_existing_install() {
+  label="$1"; occupied="$2"
+
+  case "$SLICER_ON_EXISTING" in
+    abort)
+      log "$label is already installed at $occupied; nothing to do."
+      exit 0 ;;
+    reinstall)
+      log "$label is already installed at $occupied; reinstalling."
+      return 0 ;;
+    prompt) ;;
+    *) err "SLICER_ON_EXISTING must be 'prompt', 'abort' or 'reinstall' (got '$SLICER_ON_EXISTING')." ;;
+  esac
+
+  if ! tty_available; then
+    warn "$label is already installed at $occupied, and there is no terminal to ask"
+    warn "what to do about it. Reinstalling. Set SLICER_ON_EXISTING=abort to skip."
+    return 0
+  fi
+
+  {
+    printf '\n%sWARN:%s %s is already installed at:\n' "$C_YELLOW" "$C_RESET" "$label"
+    printf '        %s\n\n' "$occupied"
+    printf '  1) Abort — leave the existing installation untouched\n'
+    printf '  2) Reinstall — replace it with a freshly downloaded copy\n'
+    printf '  3) Install elsewhere — keep both, in a directory you choose\n\n'
+  } > /dev/tty
+
+  while true; do
+    ask 'Choose [1-3] (default 1): ' || { printf '\n' > /dev/tty; ANSWER=1; }
+    case "$ANSWER" in
+      ''|1) log "Aborted; $occupied was left untouched."; exit 0 ;;
+      2)    log "Reinstalling into $occupied."; return 0 ;;
+      3)    prompt_install_dir; return 1 ;;
+      *)    printf '  Please answer 1, 2 or 3.\n' > /dev/tty ;;
+    esac
+  done
 }
 
 # ---------------------------------------------------------------------------- #
@@ -342,6 +448,19 @@ install_linux() {
   DEST="${SLICER_INSTALL_DIR:-$HOME/.local/opt}"
   BINDIR="$HOME/.local/bin"
 
+  resolve_package linux
+
+  # Every Linux package extracts to a directory named Slicer-<version>-linux-<arch>,
+  # so the metadata tells us where this build would land. Settle what to do about
+  # an existing copy of it now, before spending a download on it.
+  pkgdir=''
+  if [ -n "$PKG_VERSION" ] && [ -n "$PKG_ARCH" ]; then
+    pkgdir="Slicer-$PKG_VERSION-linux-$PKG_ARCH"
+    while [ -d "$DEST/$pkgdir" ]; do
+      if resolve_existing_install "3D Slicer $PKG_VERSION" "$DEST/$pkgdir"; then break; fi
+    done
+  fi
+
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT INT TERM
 
@@ -355,6 +474,17 @@ install_linux() {
   [ -n "$srcdir" ] || err "Could not locate the extracted Slicer directory."
 
   appdir="$DEST/$(basename "$srcdir")"
+
+  # Reached only when the server's metadata was unavailable, so we could not name
+  # the directory in advance. The archive has just named it for us; ask now
+  # rather than silently deleting whatever is sitting there.
+  if [ -z "$pkgdir" ]; then
+    while [ -d "$appdir" ]; do
+      if resolve_existing_install "3D Slicer" "$appdir"; then break; fi
+      appdir="$DEST/$(basename "$srcdir")"
+    done
+  fi
+
   mkdir -p "$DEST"
   rm -rf "$appdir"
   mv "$srcdir" "$appdir"
@@ -376,6 +506,13 @@ install_linux() {
 # ---------------------------------------------------------------------------- #
 # macOS
 # ---------------------------------------------------------------------------- #
+# Print the version of the Slicer.app bundle at $1, or nothing when no bundle is
+# there and when its Info.plist cannot be read.
+macos_app_version() {
+  [ -f "$1/Contents/Info.plist" ] || return 0
+  /usr/bin/defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || true
+}
+
 install_macos() {
   require_tools hdiutil
 
@@ -389,6 +526,17 @@ install_macos() {
   if [ "$(uname -m)" = "arm64" ] && ! /usr/bin/pgrep -q oahd 2>/dev/null; then
     warn "Apple Silicon detected. Slicer's Intel build needs Rosetta 2."
     warn "If Slicer won't launch, install it with: softwareupdate --install-rosetta --agree-to-license"
+  fi
+
+  resolve_package macosx
+
+  # Slicer.app carries no version in its name, so installing a version on top of
+  # itself would overwrite the copy already there. Different versions still
+  # replace each other — that is an upgrade, and we let it through.
+  if [ -n "$PKG_VERSION" ]; then
+    while [ "$(macos_app_version "$DEST/Slicer.app")" = "$PKG_VERSION" ]; do
+      if resolve_existing_install "3D Slicer $PKG_VERSION" "$DEST/Slicer.app"; then break; fi
+    done
   fi
 
   # Stop any running instance so the bundle can be replaced cleanly.

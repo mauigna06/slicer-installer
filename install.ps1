@@ -11,11 +11,17 @@
         * All of Slicer's dependencies (Qt, Python, VTK, ...) are bundled in the
           installer, so nothing else needs to be installed on Windows.
 
+    Each version installs into its own directory, so different versions live side
+    by side. When the version being installed is already installed, you are asked
+    whether to abort, reinstall over it, or install it into another directory.
+
     Environment overrides:
         SLICER_STABILITY     release (default) | nightly | any
         SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
         SLICER_INSTALL_DIR   install directory (default: the installer's default,
                              %LOCALAPPDATA%\NA-MIC). Use an ASCII-only path.
+        SLICER_ON_EXISTING   what to do when that version is already installed:
+                             prompt (default) | abort | reinstall
 
     Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
 #>
@@ -107,14 +113,10 @@ $packagesApi = 'https://slicer-packages.kitware.com/api/v1'
 $downloadUrl = "https://download.slicer.org/download?os=win&stability=$stability"
 if ($env:SLICER_VERSION) { $downloadUrl += "&version=$($env:SLICER_VERSION)" }
 
-# Note if Slicer is already installed; the NSIS installer upgrades in place.
-$existing = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                             'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' `
-            -ErrorAction SilentlyContinue |
-            Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like '*Slicer*' } |
-            Select-Object -First 1
-if ($existing) {
-    Write-Note "Existing installation found ($($existing.DisplayName)); it will be upgraded."
+$onExisting = if ($env:SLICER_ON_EXISTING) { $env:SLICER_ON_EXISTING.ToLower() } else { 'prompt' }
+if ($onExisting -notin @('prompt', 'abort', 'reinstall')) {
+    Write-Error "SLICER_ON_EXISTING must be prompt, abort or reinstall (got '$onExisting')."
+    exit 1
 }
 
 # Resolve the Girder item id behind the download endpoint so we can fetch the
@@ -159,6 +161,160 @@ function Get-SlicerVersion {
         $meta = Invoke-RestMethod -Uri "$packagesApi/item/$ItemId" -UseBasicParsing
         return [string]$meta.meta.version
     } catch { return $null }
+}
+
+# ---------------------------------------------------------------------------- #
+# existing installations
+# ---------------------------------------------------------------------------- #
+# Every Slicer version registers its own uninstall entry and installs into its own
+# directory, so versions coexist. Re-installing a version that is already there,
+# though, overwrites it without a word — so look for that case before downloading.
+#
+# Property access goes through PSObject.Properties because Set-StrictMode turns a
+# missing registry value into a terminating error rather than $null.
+function Get-InstalledSlicer {
+    $keys = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    Get-ItemProperty $keys -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like '*Slicer*' } |
+        ForEach-Object {
+            [pscustomobject]@{
+                Name     = [string]$_.DisplayName
+                Version  = if ($_.PSObject.Properties['DisplayVersion'])  { [string]$_.DisplayVersion }  else { '' }
+                Location = if ($_.PSObject.Properties['InstallLocation']) { [string]$_.InstallLocation } else { '' }
+            }
+        }
+}
+
+# The directory a given version occupies, found by looking where the installer
+# puts things. Backs up the registry, which may omit InstallLocation.
+#
+# The name must *end* with the version, never merely contain it: while 5.12.0 is
+# unreleased its nightlies are named "Slicer 5.12.0-2026-01-01", and those are a
+# different build that we must not offer to overwrite.
+function Find-SlicerInstallDir {
+    param([string]$Version)
+    if (-not $Version) { return '' }
+    foreach ($root in @((Join-Path $env:LOCALAPPDATA 'NA-MIC'), (Join-Path ${env:ProgramFiles} 'NA-MIC'))) {
+        if ($root -and (Test-Path $root)) {
+            $dir = Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -like "*$Version" } | Select-Object -First 1
+            if ($dir) { return $dir.FullName }
+        }
+    }
+    return ''
+}
+
+function Find-SameVersionInstall {
+    param([string]$Version)
+    if (-not $Version) { return $null }
+
+    # DisplayVersion decides whenever the registry records one ("5.12.0", or
+    # "5.12.0.34621" where the build number is tacked on). Only when it is absent
+    # do we fall back to reading the version off the display name.
+    $match = Get-InstalledSlicer | Where-Object {
+        $_.Version -eq $Version -or
+        $_.Version -like "$Version.*" -or
+        ((-not $_.Version) -and $_.Name -like "*$Version")
+    } | Select-Object -First 1
+
+    $dir = Find-SlicerInstallDir -Version $Version
+    if ($match) {
+        if (-not $match.Location -and $dir) { $match.Location = $dir }
+        return $match
+    }
+    # Installed without (or with a stale) registry entry: the directory decides.
+    if ($dir) { return [pscustomobject]@{ Name = "Slicer $Version"; Version = $Version; Location = $dir } }
+    return $null
+}
+
+# Ask for a directory to install into. NSIS reads everything after /D= literally,
+# to the end of the line, so the path must be ASCII and cannot be quoted.
+function Read-InstallDir {
+    param([string]$Forbidden)
+    while ($true) {
+        $dir = (Read-Host 'Install directory').Trim().Trim('"')
+        if (-not $dir) {
+            Write-Host '  Please enter a path.'
+        } elseif ($dir -match '[^\x20-\x7E]') {
+            Write-Host '  The path must contain only ASCII characters.'
+        } elseif ($Forbidden -and ($dir.TrimEnd('\') -eq $Forbidden.TrimEnd('\'))) {
+            Write-Host '  That is the existing installation. Pick another directory.'
+        } else {
+            try {
+                New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null
+                return $dir
+            } catch {
+                Write-Host "  Cannot create $dir. Pick another directory."
+            }
+        }
+    }
+}
+
+# Decide what to do about an installation of the version we are about to install.
+# Returns the directory to install into, or $null to leave the target unchanged
+# (which lets the installer fall back to its own default). Reinstalling returns
+# the directory the existing copy occupies, so that a copy installed somewhere
+# unusual is replaced where it stands rather than cloned into the default spot.
+# SLICER_INSTALL_DIR, when set, has already chosen the target for this run.
+# Never returns when the user aborts.
+function Resolve-ExistingInstall {
+    param($Existing, [string]$Version)
+
+    $where = if ($Existing.Location) { $Existing.Location } else { '(location unknown)' }
+    $inPlace = if ($env:SLICER_INSTALL_DIR) { $null } else { $Existing.Location }
+
+    switch ($onExisting) {
+        'abort' {
+            Write-Step "3D Slicer $Version is already installed at $where; nothing to do."
+            exit 0
+        }
+        'reinstall' {
+            Write-Note "3D Slicer $Version is already installed at $where; reinstalling."
+            return $inPlace
+        }
+    }
+
+    # No console to ask on (CI, a scheduled task, redirected input): reinstalling
+    # is what this script has always done, so keep doing it rather than hang.
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Write-Warning "3D Slicer $Version is already installed at $where, and there is no"
+        Write-Warning "terminal to ask what to do. Reinstalling. Set SLICER_ON_EXISTING=abort to skip."
+        return $inPlace
+    }
+
+    Write-Host ''
+    Write-Warning "3D Slicer $Version is already installed at:"
+    Write-Host "    $where"
+    Write-Host ''
+    Write-Host '  1) Abort - leave the existing installation untouched'
+    Write-Host '  2) Reinstall - replace it with a freshly downloaded copy'
+    Write-Host '  3) Install elsewhere - keep both, in a directory you choose'
+    Write-Host ''
+
+    while ($true) {
+        $choice = (Read-Host 'Choose [1-3] (default 1)').Trim()
+        switch ($choice) {
+            { $_ -in @('', '1') } {
+                Write-Step "Aborted; $where was left untouched."
+                exit 0
+            }
+            '2' {
+                $dest = if ($inPlace) { $inPlace } else { $env:SLICER_INSTALL_DIR }
+                if ($dest) { Write-Step "Reinstalling into $dest." } else { Write-Step 'Reinstalling.' }
+                return $inPlace
+            }
+            '3' {
+                $dir = Read-InstallDir -Forbidden $Existing.Location
+                Write-Note "Both copies will remain; Add/Remove Programs will list only this one."
+                return $dir
+            }
+            default { Write-Host '  Please answer 1, 2 or 3.' }
+        }
+    }
 }
 
 # Download a URL to a file while showing a live progress bar. We stream the body
@@ -220,6 +376,26 @@ try {
     $version  = if ($itemId) { Get-SlicerVersion -ItemId $itemId } else { $null }
     $source   = if ($itemId) { "$packagesApi/item/$itemId/download" } else { $downloadUrl }
 
+    # $null means "let the installer pick its own directory".
+    $targetDir = if ($env:SLICER_INSTALL_DIR) { $env:SLICER_INSTALL_DIR } else { $null }
+    if ($targetDir -and $targetDir -match '[^\x20-\x7E]') {
+        throw "SLICER_INSTALL_DIR must contain only ASCII characters: $targetDir"
+    }
+
+    # Settle what to do about an existing copy of this version before spending a
+    # ~250 MB download on it. Without server metadata there is no version to
+    # compare against, so we cannot tell, and carry on as before.
+    $existing = Find-SameVersionInstall -Version $version
+    if ($existing) {
+        $chosen = Resolve-ExistingInstall -Existing $existing -Version $version
+        if ($chosen) { $targetDir = $chosen }
+    } else {
+        $others = @(Get-InstalledSlicer)
+        if ($others.Count -gt 0) {
+            Write-Note "Already installed: $($others.Name -join ', '). Versions install side by side."
+        }
+    }
+
     # Cache verified installers between runs, keyed by version, so re-running the
     # script reuses an installer we already downloaded instead of fetching the
     # whole ~250 MB package again. When the version is unknown we can't name the
@@ -267,13 +443,12 @@ try {
     # The Slicer installer is NSIS-based:
     #   /S           silent install
     #   /D=<path>    install directory (must be the LAST argument, unquoted)
-    $arguments = @('/S')
-    if ($env:SLICER_INSTALL_DIR) {
-        if ($env:SLICER_INSTALL_DIR -match '[^\x20-\x7E]') {
-            throw "SLICER_INSTALL_DIR must contain only ASCII characters: $($env:SLICER_INSTALL_DIR)"
-        }
-        $arguments += "/D=$($env:SLICER_INSTALL_DIR)"
-    }
+    # NSIS reads everything after /D= as the path, to the end of the command line,
+    # so a path with spaces needs no quoting -- and must not get any. Spelling the
+    # command line out as one string says that, rather than leaving it to how
+    # Start-Process happens to join an argument array.
+    $arguments = '/S'
+    if ($targetDir) { $arguments += " /D=$targetDir" }
 
     Write-Step "Running the installer silently..."
     $proc = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
@@ -283,7 +458,7 @@ try {
 
     # Locate the installed launcher so we can tell the user where it went.
     $searchRoots = @()
-    if ($env:SLICER_INSTALL_DIR) { $searchRoots += $env:SLICER_INSTALL_DIR }
+    if ($targetDir) { $searchRoots += $targetDir }
     $searchRoots += (Join-Path $env:LOCALAPPDATA 'NA-MIC')
     $searchRoots += (Join-Path ${env:ProgramFiles} 'NA-MIC')
 

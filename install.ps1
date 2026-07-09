@@ -209,7 +209,10 @@ function Save-UrlWithProgress {
     }
 }
 
-$installer = Join-Path $env:TEMP ("Slicer-" + [guid]::NewGuid().ToString('N') + ".exe")
+# Assigned inside the try; declared here so the finally block can reference them
+# safely even if an early statement throws (Set-StrictMode forbids unset vars).
+$installer     = $null
+$keepInstaller = $false
 
 try {
     $itemId   = Resolve-SlicerItemId -Url $downloadUrl
@@ -217,18 +220,48 @@ try {
     $version  = if ($itemId) { Get-SlicerVersion -ItemId $itemId } else { $null }
     $source   = if ($itemId) { "$packagesApi/item/$itemId/download" } else { $downloadUrl }
 
-    $label = if ($version) { "3D Slicer $version" } else { '3D Slicer' }
-    Write-Step "Downloading $label for Windows..."
-    Save-UrlWithProgress -Url $source -OutFile $installer -Activity "Downloading $label"
-
-    if ($expected) {
-        $actual = (Get-FileHash -Path $installer -Algorithm SHA512).Hash.ToLower()
-        if ($actual -ne $expected.ToLower()) {
-            throw "Checksum verification failed (expected $expected, got $actual)."
-        }
-        Write-Step "Checksum verified (SHA-512)."
+    # Cache verified installers between runs, keyed by version, so re-running the
+    # script reuses an installer we already downloaded instead of fetching the
+    # whole ~250 MB package again. When the version is unknown we can't name the
+    # cache file stably, so we fall back to a throwaway temp file (no caching).
+    $cacheDir = $null
+    if ($version) {
+        $cacheDir = Join-Path $env:LOCALAPPDATA 'slicer-installer'
+        try { New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null } catch { $cacheDir = $null }
+    }
+    if ($cacheDir -and (Test-Path $cacheDir)) {
+        $installer     = Join-Path $cacheDir "Slicer-$version.exe"
+        $keepInstaller = $true
     } else {
-        Write-Warning "Could not obtain a checksum from the server; skipping verification."
+        $installer     = Join-Path $env:TEMP ("Slicer-" + [guid]::NewGuid().ToString('N') + ".exe")
+        $keepInstaller = $false
+    }
+
+    # Reuse the cached installer when it is present and still matches the
+    # publisher's checksum; without a checksum we can't trust it, so re-download.
+    $cached = $false
+    if ($keepInstaller -and $expected -and (Test-Path $installer)) {
+        $have = (Get-FileHash -Path $installer -Algorithm SHA512).Hash.ToLower()
+        if ($have -eq $expected.ToLower()) {
+            Write-Step "Using cached 3D Slicer $version."
+            $cached = $true
+        }
+    }
+
+    if (-not $cached) {
+        $label = if ($version) { "3D Slicer $version" } else { '3D Slicer' }
+        Write-Step "Downloading $label for Windows..."
+        Save-UrlWithProgress -Url $source -OutFile $installer -Activity "Downloading $label"
+
+        if ($expected) {
+            $actual = (Get-FileHash -Path $installer -Algorithm SHA512).Hash.ToLower()
+            if ($actual -ne $expected.ToLower()) {
+                throw "Checksum verification failed (expected $expected, got $actual)."
+            }
+            Write-Step "Checksum verified (SHA-512)."
+        } else {
+            Write-Warning "Could not obtain a checksum from the server; skipping verification."
+        }
     }
 
     # The Slicer installer is NSIS-based:
@@ -271,5 +304,8 @@ try {
     Write-Host "3D Slicer installation complete." -ForegroundColor Green
 }
 finally {
-    if (Test-Path $installer) { Remove-Item $installer -Force -ErrorAction SilentlyContinue }
+    # Keep cached installers for the next run; only clean up throwaway temp ones.
+    if (-not $keepInstaller -and $installer -and (Test-Path $installer)) {
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    }
 }

@@ -40,6 +40,9 @@ PACKAGES_API="https://slicer-packages.kitware.com/api/v1"
 # Initialized empty so `set -u` is satisfied before setup_colors() runs.
 C_BLUE='' C_YELLOW='' C_RED='' C_GREEN='' C_RESET=''
 
+# Set by download_verified() to the path of the verified package to install.
+DL_PKG=''
+
 # ---------------------------------------------------------------------------- #
 # helpers
 # ---------------------------------------------------------------------------- #
@@ -166,13 +169,19 @@ get_version() {
     | head -n1 | grep -oE '"[^"]+"$' | tr -d '"'
 }
 
+# Compute the SHA-512 of a file, printing nothing when no tool is available.
+sha512_of() {
+  if have sha512sum; then
+    sha512sum "$1" | awk '{print $1}'
+  elif have shasum; then
+    shasum -a 512 "$1" | awk '{print $1}'
+  fi
+}
+
 verify_sha512() {
   # verify_sha512 <file> <expected-hex>
-  if have sha512sum; then
-    actual=$(sha512sum "$1" | awk '{print $1}')
-  elif have shasum; then
-    actual=$(shasum -a 512 "$1" | awk '{print $1}')
-  else
+  actual=$(sha512_of "$1")
+  if [ -z "$actual" ]; then
     warn "No SHA-512 tool found; skipping checksum verification."
     return 0
   fi
@@ -180,10 +189,20 @@ verify_sha512() {
   log "Checksum verified (SHA-512)."
 }
 
-# Download the package for an OS, verifying its checksum when possible.
-# Writes the package to $1 (output path); $2 is the OS token (linux|macosx).
+# True when <file> exists and already matches <expected-hex>, i.e. a previously
+# downloaded package we can trust and reuse without fetching it again.
+cached_download_valid() {
+  [ -f "$1" ] || return 1
+  actual=$(sha512_of "$1")
+  [ -n "$actual" ] && [ "$actual" = "$2" ]
+}
+
+# Download the package for an OS, verifying its checksum when possible and
+# reusing a previously downloaded copy from the cache when it still matches.
+# $1 is the OS token (linux|macosx); $2 is a throwaway path used only when the
+# cache is unusable. Sets the global DL_PKG to the verified package's path.
 download_verified() {
-  out="$1"; os="$2"
+  os="$1"; tmp_out="$2"
   dl_url="$BASE_URL?os=$os&stability=$SLICER_STABILITY"
   [ -n "$SLICER_VERSION" ] && dl_url="$dl_url&version=$SLICER_VERSION"
 
@@ -195,6 +214,31 @@ download_verified() {
     src_url="$PACKAGES_API/item/$item_id/download"
   fi
 
+  case "$os" in
+    linux)  ext='tar.gz' ;;
+    macosx) ext='dmg' ;;
+    *)      ext='bin' ;;
+  esac
+
+  # Cache downloads between runs, keyed by version, so re-running the installer
+  # reuses an already-fetched package instead of downloading it again. Without a
+  # resolved version we can't name the file stably, so caching is skipped.
+  cache_file=''
+  cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/slicer-installer"
+  if [ -n "$version" ] && mkdir -p "$cache_dir" 2>/dev/null && [ -w "$cache_dir" ]; then
+    cache_file="$cache_dir/Slicer-$version-$os.$ext"
+  fi
+
+  # Reuse the cached package when it is present and still passes verification.
+  if [ -n "$cache_file" ] && [ -n "$sha" ] && cached_download_valid "$cache_file" "$sha"; then
+    log "Using cached 3D Slicer $version ($os)."
+    DL_PKG="$cache_file"
+    return 0
+  fi
+
+  # Download into the cache when we have a stable name for it (so the next run
+  # can reuse it), otherwise into the throwaway temp path.
+  out="${cache_file:-$tmp_out}"
   if [ -n "$version" ]; then
     log "Downloading 3D Slicer $version ($os)…"
   else
@@ -207,6 +251,7 @@ download_verified() {
   else
     warn "Could not obtain a checksum from the server; skipping verification."
   fi
+  DL_PKG="$out"
 }
 
 # ---------------------------------------------------------------------------- #
@@ -300,11 +345,11 @@ install_linux() {
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT INT TERM
 
-  download_verified "$TMP/slicer.tar.gz" linux
+  download_verified linux "$TMP/slicer.tar.gz"
 
   log "Extracting archive…"
   mkdir -p "$TMP/x"
-  tar -xzf "$TMP/slicer.tar.gz" -C "$TMP/x"
+  tar -xzf "$DL_PKG" -C "$TMP/x"
 
   srcdir="$(find "$TMP/x" -maxdepth 1 -type d -name 'Slicer-*' | head -n1)"
   [ -n "$srcdir" ] || err "Could not locate the extracted Slicer directory."
@@ -366,11 +411,11 @@ install_macos() {
   }
   trap cleanup_macos EXIT INT TERM
 
-  download_verified "$TMP/Slicer.dmg" macosx
+  download_verified macosx "$TMP/Slicer.dmg"
 
   log "Mounting disk image…"
   mkdir -p "$MNT"
-  hdiutil attach "$TMP/Slicer.dmg" -nobrowse -quiet -mountpoint "$MNT"
+  hdiutil attach "$DL_PKG" -nobrowse -quiet -mountpoint "$MNT"
 
   app="$(/usr/bin/find "$MNT" -maxdepth 1 -name '*.app' | head -n1)"
   [ -n "$app" ] || err "No .app bundle found inside the disk image."

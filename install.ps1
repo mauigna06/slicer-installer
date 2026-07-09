@@ -153,6 +153,14 @@ function Get-SlicerSha512 {
     } catch { return $null }
 }
 
+function Get-SlicerVersion {
+    param([string]$ItemId)
+    try {
+        $meta = Invoke-RestMethod -Uri "$packagesApi/item/$ItemId" -UseBasicParsing
+        return [string]$meta.meta.version
+    } catch { return $null }
+}
+
 # Download a URL to a file while showing a live progress bar. We stream the body
 # ourselves in large chunks instead of using `Invoke-WebRequest -OutFile`: its
 # built-in progress bar throttles the ~250 MB transfer to a crawl in Windows
@@ -160,7 +168,8 @@ function Get-SlicerSha512 {
 function Save-UrlWithProgress {
     param(
         [Parameter(Mandatory)] [string]$Url,
-        [Parameter(Mandatory)] [string]$OutFile
+        [Parameter(Mandatory)] [string]$OutFile,
+        [string]$Activity = 'Downloading 3D Slicer'
     )
 
     $req = [Net.HttpWebRequest]::Create($Url)
@@ -183,17 +192,17 @@ function Save-UrlWithProgress {
             if ($now - $lastTick -ge 100) {
                 $lastTick = $now
                 if ($total -gt 0) {
-                    Write-Progress -Activity 'Downloading 3D Slicer' `
+                    Write-Progress -Activity $Activity `
                         -Status ("{0:N1} / {1:N1} MB" -f ($read / 1MB), ($total / 1MB)) `
                         -PercentComplete ([int](($read * 100) / $total))
                 } else {
-                    Write-Progress -Activity 'Downloading 3D Slicer' `
+                    Write-Progress -Activity $Activity `
                         -Status ("{0:N1} MB" -f ($read / 1MB))
                 }
             }
         }
     } finally {
-        Write-Progress -Activity 'Downloading 3D Slicer' -Completed
+        Write-Progress -Activity $Activity -Completed
         $file.Dispose()
         $stream.Dispose()
         $resp.Dispose()
@@ -205,10 +214,12 @@ $installer = Join-Path $env:TEMP ("Slicer-" + [guid]::NewGuid().ToString('N') + 
 try {
     $itemId   = Resolve-SlicerItemId -Url $downloadUrl
     $expected = if ($itemId) { Get-SlicerSha512 -ItemId $itemId } else { $null }
+    $version  = if ($itemId) { Get-SlicerVersion -ItemId $itemId } else { $null }
     $source   = if ($itemId) { "$packagesApi/item/$itemId/download" } else { $downloadUrl }
 
-    Write-Step "Downloading 3D Slicer for Windows..."
-    Save-UrlWithProgress -Url $source -OutFile $installer
+    $label = if ($version) { "3D Slicer $version" } else { '3D Slicer' }
+    Write-Step "Downloading $label for Windows..."
+    Save-UrlWithProgress -Url $source -OutFile $installer -Activity "Downloading $label"
 
     if ($expected) {
         $actual = (Get-FileHash -Path $installer -Algorithm SHA512).Hash.ToLower()

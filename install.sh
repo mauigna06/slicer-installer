@@ -158,6 +158,14 @@ get_sha512() {
     | grep -oE '[a-f0-9]{128}' | head -n1
 }
 
+# Extract the human-readable version for a given item id (empty if unavailable).
+get_version() {
+  meta=$(fetch "$PACKAGES_API/item/$1" 2>/dev/null || true)
+  printf '%s' "$meta" \
+    | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' \
+    | head -n1 | grep -oE '"[^"]+"$' | tr -d '"'
+}
+
 verify_sha512() {
   # verify_sha512 <file> <expected-hex>
   if have sha512sum; then
@@ -180,13 +188,18 @@ download_verified() {
   [ -n "$SLICER_VERSION" ] && dl_url="$dl_url&version=$SLICER_VERSION"
 
   item_id=$(resolve_item_id "$dl_url")
-  sha=''; src_url="$dl_url"
+  sha=''; version=''; src_url="$dl_url"
   if [ -n "$item_id" ]; then
     sha=$(get_sha512 "$item_id")
+    version=$(get_version "$item_id")
     src_url="$PACKAGES_API/item/$item_id/download"
   fi
 
-  log "Downloading 3D Slicer ($os)…"
+  if [ -n "$version" ]; then
+    log "Downloading 3D Slicer $version ($os)…"
+  else
+    log "Downloading 3D Slicer ($os)…"
+  fi
   download "$src_url" "$out"
 
   if [ -n "$sha" ]; then

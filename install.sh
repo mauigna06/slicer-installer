@@ -18,16 +18,18 @@
 # macOS the app goes to ~/Applications, which LaunchServices indexes just like
 # /Applications, rather than to the root-owned system directory.
 #
-# When the version being installed is already installed, you are asked whether to
-# abort, reinstall over it, or install it into another directory so both copies
-# can live side by side.
+# When an installation already sits where this script would write, you are asked
+# whether to abort, replace it, or install into another directory so both copies
+# can live side by side. On Linux that means the same version, since each version
+# gets its own directory; on macOS it means any version, since every one of them
+# installs as Slicer.app.
 #
 # Environment overrides:
 #   SLICER_STABILITY     release (default) | nightly | any
 #   SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
 #   SLICER_INSTALL_DIR   where to install Slicer; must be writable without root
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
-#   SLICER_ON_EXISTING   what to do when that version is already installed:
+#   SLICER_ON_EXISTING   what to do when an installation is already there:
 #                        prompt (default) | abort | reinstall
 #   NO_COLOR             set to disable colored output
 #
@@ -314,22 +316,25 @@ prompt_install_dir() {
   done
 }
 
-# The version we are about to install already occupies $2 ($1 names it for the
-# user). Decide what to do about it.
+# An installation we would destroy already occupies $2 ($1 names it for the
+# user). Decide what to do about it. $3 describes what replacing it would mean,
+# and defaults to reinstalling the very same version; macOS passes its own text,
+# because there any version installs over any other.
 #
 # Returns 0 when the caller should go ahead and install into the current DEST,
 # and 1 once DEST points at a directory the user picked instead — which the
-# caller must re-check, since that directory may hold this version too.
+# caller must re-check, since that directory may be occupied too.
 # Never returns when the user aborts.
 resolve_existing_install() {
   label="$1"; occupied="$2"
+  replace_desc="${3:-Reinstall — replace it with a freshly downloaded copy}"
 
   case "$SLICER_ON_EXISTING" in
     abort)
       log "$label is already installed at $occupied; nothing to do."
       exit 0 ;;
     reinstall)
-      log "$label is already installed at $occupied; reinstalling."
+      log "$label is already installed at $occupied; replacing it."
       return 0 ;;
     prompt) ;;
     *) err "SLICER_ON_EXISTING must be 'prompt', 'abort' or 'reinstall' (got '$SLICER_ON_EXISTING')." ;;
@@ -337,7 +342,7 @@ resolve_existing_install() {
 
   if ! tty_available; then
     warn "$label is already installed at $occupied, and there is no terminal to ask"
-    warn "what to do about it. Reinstalling. Set SLICER_ON_EXISTING=abort to skip."
+    warn "what to do about it. Replacing it. Set SLICER_ON_EXISTING=abort to skip."
     return 0
   fi
 
@@ -345,7 +350,7 @@ resolve_existing_install() {
     printf '\n%sWARN:%s %s is already installed at:\n' "$C_YELLOW" "$C_RESET" "$label"
     printf '        %s\n\n' "$occupied"
     printf '  1) Abort — leave the existing installation untouched\n'
-    printf '  2) Reinstall — replace it with a freshly downloaded copy\n'
+    printf '  2) %s\n' "$replace_desc"
     printf '  3) Install elsewhere — keep both, in a directory you choose\n\n'
   } > /dev/tty
 
@@ -353,7 +358,7 @@ resolve_existing_install() {
     ask 'Choose [1-3] (default 1): ' || { printf '\n' > /dev/tty; ANSWER=1; }
     case "$ANSWER" in
       ''|1) log "Aborted; $occupied was left untouched."; exit 0 ;;
-      2)    log "Reinstalling into $occupied."; return 0 ;;
+      2)    log "Replacing $occupied."; return 0 ;;
       3)    prompt_install_dir; return 1 ;;
       *)    printf '  Please answer 1, 2 or 3.\n' > /dev/tty ;;
     esac
@@ -530,14 +535,25 @@ install_macos() {
 
   resolve_package macosx
 
-  # Slicer.app carries no version in its name, so installing a version on top of
-  # itself would overwrite the copy already there. Different versions still
-  # replace each other — that is an upgrade, and we let it through.
-  if [ -n "$PKG_VERSION" ]; then
-    while [ "$(macos_app_version "$DEST/Slicer.app")" = "$PKG_VERSION" ]; do
-      if resolve_existing_install "3D Slicer $PKG_VERSION" "$DEST/Slicer.app"; then break; fi
-    done
-  fi
+  # Slicer.app carries no version in its name, so whatever bundle sits at the
+  # destination gets overwritten — upgrading discards the old version just as
+  # surely as reinstalling the same one does. Ask about either, before
+  # downloading, and let "install elsewhere" keep the two side by side.
+  while [ -e "$DEST/Slicer.app" ]; do
+    installed="$(macos_app_version "$DEST/Slicer.app")"
+
+    if [ -n "$installed" ]; then label="3D Slicer $installed"; else label="3D Slicer"; fi
+
+    if [ -n "$installed" ] && [ "$installed" = "$PKG_VERSION" ]; then
+      replace=''  # same version; the default "Reinstall" wording says it best
+    elif [ -n "$PKG_VERSION" ]; then
+      replace="Replace — discard it and install 3D Slicer $PKG_VERSION"
+    else
+      replace="Replace — discard it and install the version being downloaded"
+    fi
+
+    if resolve_existing_install "$label" "$DEST/Slicer.app" "$replace"; then break; fi
+  done
 
   # Stop any running instance so the bundle can be replaced cleanly.
   if /usr/bin/pgrep -x Slicer >/dev/null 2>&1; then

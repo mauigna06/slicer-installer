@@ -16,11 +16,11 @@
     whether to abort, reinstall over it, or install it into another directory.
 
     Environment overrides:
-        SLICER_STABILITY     release (default) | nightly | any
+        SLICER_RELEASE_TYPE  stable (default) | preview | any
         SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
         SLICER_INSTALL_DIR   install directory (default: the installer's default,
                              %LOCALAPPDATA%\NA-MIC). Use an ASCII-only path.
-        SLICER_ON_EXISTING   what to do when that version is already installed:
+        SLICER_IF_EXISTING   what to do when that version is already installed:
                              prompt (default) | abort | reinstall
 
     Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
@@ -108,14 +108,24 @@ if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 
     Write-Note "ARM64 Windows detected: Slicer ships an x64 build that runs under emulation."
 }
 
-$stability   = if ($env:SLICER_STABILITY) { $env:SLICER_STABILITY } else { 'release' }
+$releaseType = if ($env:SLICER_RELEASE_TYPE) { $env:SLICER_RELEASE_TYPE.ToLower() } else { 'stable' }
+# The download server speaks release/nightly/any; map our user-facing names.
+$stability = switch ($releaseType) {
+    'stable'  { 'release' }
+    'preview' { 'nightly' }
+    'any'     { 'any' }
+    default {
+        Write-Error "SLICER_RELEASE_TYPE must be stable, preview or any (got '$releaseType')."
+        exit 1
+    }
+}
 $packagesApi = 'https://slicer-packages.kitware.com/api/v1'
 $downloadUrl = "https://download.slicer.org/download?os=win&stability=$stability"
 if ($env:SLICER_VERSION) { $downloadUrl += "&version=$($env:SLICER_VERSION)" }
 
-$onExisting = if ($env:SLICER_ON_EXISTING) { $env:SLICER_ON_EXISTING.ToLower() } else { 'prompt' }
+$onExisting = if ($env:SLICER_IF_EXISTING) { $env:SLICER_IF_EXISTING.ToLower() } else { 'prompt' }
 if ($onExisting -notin @('prompt', 'abort', 'reinstall')) {
-    Write-Error "SLICER_ON_EXISTING must be prompt, abort or reinstall (got '$onExisting')."
+    Write-Error "SLICER_IF_EXISTING must be prompt, abort or reinstall (got '$onExisting')."
     exit 1
 }
 
@@ -282,7 +292,7 @@ function Resolve-ExistingInstall {
     # is what this script has always done, so keep doing it rather than hang.
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
         Write-Warning "3D Slicer $Version is already installed at $where, and there is no"
-        Write-Warning "terminal to ask what to do. Reinstalling. Set SLICER_ON_EXISTING=abort to skip."
+        Write-Warning "terminal to ask what to do. Reinstalling. Set SLICER_IF_EXISTING=abort to skip."
         return $inPlace
     }
 

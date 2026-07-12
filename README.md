@@ -86,10 +86,10 @@ Both installers read the same environment variables:
 
 | Variable             | Values / default                                | What it does                                                             |
 |----------------------|-------------------------------------------------|--------------------------------------------------------------------------|
-| `SLICER_STABILITY`   | `release` *(default)* · `nightly` · `any`       | Which release channel to install from.                                   |
+| `SLICER_RELEASE_TYPE`| `stable` *(default)* · `preview` · `any`        | Which release channel to install from.                                   |
 | `SLICER_VERSION`     | e.g. `5.12.0` *(default: latest)*               | Pin an exact version instead of the latest.                              |
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
-| `SLICER_ON_EXISTING` | `prompt` *(default)* · `abort` · `reinstall`    | What to do when that version is already installed.                       |
+| `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall`    | What to do when that version is already installed.                       |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 
 `SLICER_INSTALL_DIR` defaults per platform:
@@ -111,27 +111,27 @@ Prefix the `sh` at the end of the pipe with the variables:
 # Install a specific pinned version
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_VERSION=5.12.0 sh
 
-# Install the latest nightly build instead of the stable release
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_STABILITY=nightly sh
+# Install the latest preview build instead of the stable release
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_RELEASE_TYPE=preview sh
 
-# Install from any channel (release or nightly, whichever is newest)
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_STABILITY=any sh
+# Install from any channel (stable or preview, whichever is newest)
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_RELEASE_TYPE=any sh
 
 # Install into a custom directory
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_INSTALL_DIR="$HOME/apps/slicer" sh
 
 # Reinstall over an existing copy without being asked
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_ON_EXISTING=reinstall sh
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_IF_EXISTING=reinstall sh
 
 # Abort instead of prompting if the version is already installed
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_ON_EXISTING=abort sh
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_IF_EXISTING=abort sh
 
 # Disable colored output and the logo
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | NO_COLOR=1 sh
 
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
-  SLICER_STABILITY=nightly SLICER_INSTALL_DIR="$HOME/apps/slicer" SLICER_ON_EXISTING=reinstall sh
+  SLICER_RELEASE_TYPE=preview SLICER_INSTALL_DIR="$HOME/apps/slicer" SLICER_IF_EXISTING=reinstall sh
 ```
 
 ### Windows
@@ -142,26 +142,26 @@ Set `$env:` variables before the pipe, separated by `;`:
 # Install a specific pinned version
 $env:SLICER_VERSION="5.12.0"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
-# Install the latest nightly build instead of the stable release
-$env:SLICER_STABILITY="nightly"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+# Install the latest preview build instead of the stable release
+$env:SLICER_RELEASE_TYPE="preview"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
-# Install from any channel (release or nightly, whichever is newest)
-$env:SLICER_STABILITY="any"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+# Install from any channel (stable or preview, whichever is newest)
+$env:SLICER_RELEASE_TYPE="any"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Install into a custom directory (ASCII-only path)
 $env:SLICER_INSTALL_DIR="C:\Slicer"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Reinstall over an existing copy without being asked
-$env:SLICER_ON_EXISTING="reinstall"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+$env:SLICER_IF_EXISTING="reinstall"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Abort instead of prompting if the version is already installed
-$env:SLICER_ON_EXISTING="abort"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+$env:SLICER_IF_EXISTING="abort"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Disable colored output and the logo
 $env:NO_COLOR="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Combine several overrides at once
-$env:SLICER_STABILITY="nightly"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_ON_EXISTING="reinstall"; `
+$env:SLICER_RELEASE_TYPE="preview"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_IF_EXISTING="reinstall"; `
   irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 ```
 

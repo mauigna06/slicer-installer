@@ -25,11 +25,11 @@
 # installs as Slicer.app.
 #
 # Environment overrides:
-#   SLICER_STABILITY     release (default) | nightly | any
+#   SLICER_RELEASE_TYPE  stable (default) | preview | any
 #   SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
 #   SLICER_INSTALL_DIR   where to install Slicer; must be writable without root
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
-#   SLICER_ON_EXISTING   what to do when an installation is already there:
+#   SLICER_IF_EXISTING   what to do when an installation is already there:
 #                        prompt (default) | abort | reinstall
 #   NO_COLOR             set to disable colored output
 #
@@ -40,9 +40,9 @@
 
 set -eu
 
-SLICER_STABILITY="${SLICER_STABILITY:-release}"
+SLICER_RELEASE_TYPE="${SLICER_RELEASE_TYPE:-stable}"
 SLICER_VERSION="${SLICER_VERSION:-}"
-SLICER_ON_EXISTING="${SLICER_ON_EXISTING:-prompt}"
+SLICER_IF_EXISTING="${SLICER_IF_EXISTING:-prompt}"
 BASE_URL="https://download.slicer.org/download"
 PACKAGES_API="https://slicer-packages.kitware.com/api/v1"
 
@@ -184,7 +184,14 @@ json_field() {
 # build is already installed without downloading half a gigabyte to find out.
 resolve_package() {
   os="$1"
-  PKG_URL="$BASE_URL?os=$os&stability=$SLICER_STABILITY"
+  # The download server speaks release/nightly/any; map our user-facing names.
+  case "$SLICER_RELEASE_TYPE" in
+    stable)  stability=release ;;
+    preview) stability=nightly ;;
+    any)     stability=any ;;
+    *) err "SLICER_RELEASE_TYPE must be 'stable', 'preview' or 'any' (got '$SLICER_RELEASE_TYPE')." ;;
+  esac
+  PKG_URL="$BASE_URL?os=$os&stability=$stability"
   [ -n "$SLICER_VERSION" ] && PKG_URL="$PKG_URL&version=$SLICER_VERSION"
 
   PKG_ITEM_ID=$(resolve_item_id "$PKG_URL")
@@ -329,7 +336,7 @@ resolve_existing_install() {
   label="$1"; occupied="$2"
   replace_desc="${3:-Reinstall — replace it with a freshly downloaded copy}"
 
-  case "$SLICER_ON_EXISTING" in
+  case "$SLICER_IF_EXISTING" in
     abort)
       log "$label is already installed at $occupied; nothing to do."
       exit 0 ;;
@@ -337,12 +344,12 @@ resolve_existing_install() {
       log "$label is already installed at $occupied; replacing it."
       return 0 ;;
     prompt) ;;
-    *) err "SLICER_ON_EXISTING must be 'prompt', 'abort' or 'reinstall' (got '$SLICER_ON_EXISTING')." ;;
+    *) err "SLICER_IF_EXISTING must be 'prompt', 'abort' or 'reinstall' (got '$SLICER_IF_EXISTING')." ;;
   esac
 
   if ! tty_available; then
     warn "$label is already installed at $occupied, and there is no terminal to ask"
-    warn "what to do about it. Replacing it. Set SLICER_ON_EXISTING=abort to skip."
+    warn "what to do about it. Replacing it. Set SLICER_IF_EXISTING=abort to skip."
     return 0
   fi
 

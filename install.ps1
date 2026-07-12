@@ -13,7 +13,8 @@
 
     Each version installs into its own directory, so different versions live side
     by side. When the version being installed is already installed, you are asked
-    whether to abort, reinstall over it, or install it into another directory.
+    whether to abort, reinstall over it, install it into another directory, or
+    uninstall the existing copy.
 
     Environment overrides:
         SLICER_RELEASE_TYPE  stable (default) | preview | any
@@ -21,7 +22,7 @@
         SLICER_INSTALL_DIR   install directory (default: the installer's default,
                              %LOCALAPPDATA%\NA-MIC). Use an ASCII-only path.
         SLICER_IF_EXISTING   what to do when that version is already installed:
-                             prompt (default) | abort | reinstall
+                             prompt (default) | abort | reinstall | uninstall
 
     Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
 #>
@@ -124,8 +125,8 @@ $downloadUrl = "https://download.slicer.org/download?os=win&stability=$stability
 if ($env:SLICER_VERSION) { $downloadUrl += "&version=$($env:SLICER_VERSION)" }
 
 $onExisting = if ($env:SLICER_IF_EXISTING) { $env:SLICER_IF_EXISTING.ToLower() } else { 'prompt' }
-if ($onExisting -notin @('prompt', 'abort', 'reinstall')) {
-    Write-Error "SLICER_IF_EXISTING must be prompt, abort or reinstall (got '$onExisting')."
+if ($onExisting -notin @('prompt', 'abort', 'reinstall', 'uninstall')) {
+    Write-Error "SLICER_IF_EXISTING must be prompt, abort, reinstall or uninstall (got '$onExisting')."
     exit 1
 }
 
@@ -192,9 +193,11 @@ function Get-InstalledSlicer {
         Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like '*Slicer*' } |
         ForEach-Object {
             [pscustomobject]@{
-                Name     = [string]$_.DisplayName
-                Version  = if ($_.PSObject.Properties['DisplayVersion'])  { [string]$_.DisplayVersion }  else { '' }
-                Location = if ($_.PSObject.Properties['InstallLocation']) { [string]$_.InstallLocation } else { '' }
+                Name                 = [string]$_.DisplayName
+                Version              = if ($_.PSObject.Properties['DisplayVersion'])       { [string]$_.DisplayVersion }       else { '' }
+                Location             = if ($_.PSObject.Properties['InstallLocation'])      { [string]$_.InstallLocation }      else { '' }
+                UninstallString      = if ($_.PSObject.Properties['UninstallString'])      { [string]$_.UninstallString }      else { '' }
+                QuietUninstallString = if ($_.PSObject.Properties['QuietUninstallString']) { [string]$_.QuietUninstallString } else { '' }
             }
         }
 }
@@ -264,6 +267,61 @@ function Read-InstallDir {
     }
 }
 
+# Run the registered uninstaller for an existing install and wait for it to
+# finish. Slicer's uninstaller is NSIS-based, so it takes /S for a silent run;
+# QuietUninstallString, when the registry records one, already includes it.
+#
+# An NSIS uninstaller normally copies itself to %TEMP% and relaunches so it can
+# delete its own directory, returning to the caller before the work is done --
+# which would defeat -Wait. Passing _?=<dir> disables that copy and makes the run
+# synchronous, but then the uninstaller cannot delete itself. So we make the copy
+# ourselves: running our own temp copy with _?=<installdir> both waits AND lets
+# the original directory (uninstaller included) be removed cleanly.
+function Uninstall-Slicer {
+    param($Existing)
+
+    # Prefer the command the registry records; fall back to the Uninstall.exe that
+    # NSIS drops in the install directory.
+    $cmd = ''
+    if ($Existing.PSObject.Properties['QuietUninstallString'] -and $Existing.QuietUninstallString) {
+        $cmd = $Existing.QuietUninstallString
+    } elseif ($Existing.PSObject.Properties['UninstallString'] -and $Existing.UninstallString) {
+        $cmd = $Existing.UninstallString
+    }
+
+    $exe = ''
+    if ($cmd -match '^\s*"([^"]+)"') { $exe = $Matches[1] }
+    elseif ($cmd -match '^\s*(\S+)') { $exe = $Matches[1] }
+
+    $location = if ($Existing.PSObject.Properties['Location']) { [string]$Existing.Location } else { '' }
+    if ((-not $exe) -and $location) {
+        $candidate = Join-Path $location 'Uninstall.exe'
+        if (Test-Path $candidate) { $exe = $candidate }
+    }
+    if ((-not $exe) -or (-not (Test-Path $exe))) {
+        throw "Could not find an uninstaller for $($Existing.Name)."
+    }
+
+    Write-Step "Uninstalling $($Existing.Name)..."
+    if ($location) {
+        $temp = Join-Path $env:TEMP ("SlicerUninstall-" + [guid]::NewGuid().ToString('N') + ".exe")
+        Copy-Item -LiteralPath $exe -Destination $temp -Force
+        try {
+            $proc = Start-Process -FilePath $temp `
+                -ArgumentList "/S _?=$($location.TrimEnd('\'))" -Wait -PassThru
+        } finally {
+            Remove-Item $temp -Force -ErrorAction SilentlyContinue
+        }
+    } else {
+        # No known directory to run in place from: launch the uninstaller as-is.
+        $proc = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
+    }
+
+    if ($proc.ExitCode -ne 0) {
+        throw "Uninstaller exited with code $($proc.ExitCode)."
+    }
+}
+
 # Decide what to do about an installation of the version we are about to install.
 # Returns the directory to install into, or $null to leave the target unchanged
 # (which lets the installer fall back to its own default). Reinstalling returns
@@ -286,6 +344,12 @@ function Resolve-ExistingInstall {
             Write-Note "3D Slicer $Version is already installed at $where; reinstalling."
             return $inPlace
         }
+        'uninstall' {
+            Write-Step "3D Slicer $Version is already installed at $where; uninstalling it."
+            Uninstall-Slicer -Existing $Existing
+            Write-Host "3D Slicer has been uninstalled." -ForegroundColor Green
+            exit 0
+        }
     }
 
     # No console to ask on (CI, a scheduled task, redirected input): reinstalling
@@ -303,10 +367,11 @@ function Resolve-ExistingInstall {
     Write-Host '  1) Abort - leave the existing installation untouched'
     Write-Host '  2) Reinstall - replace it with a freshly downloaded copy'
     Write-Host '  3) Install elsewhere - keep both, in a directory you choose'
+    Write-Host '  4) Uninstall - remove the existing installation and exit'
     Write-Host ''
 
     while ($true) {
-        $choice = (Read-Host 'Choose [1-3] (default 1)').Trim()
+        $choice = (Read-Host 'Choose [1-4] (default 1)').Trim()
         switch ($choice) {
             { $_ -in @('', '1') } {
                 Write-Step "Aborted; $where was left untouched."
@@ -322,7 +387,12 @@ function Resolve-ExistingInstall {
                 Write-Note "Both copies will remain; Add/Remove Programs will list only this one."
                 return $dir
             }
-            default { Write-Host '  Please answer 1, 2 or 3.' }
+            '4' {
+                Uninstall-Slicer -Existing $Existing
+                Write-Host "3D Slicer has been uninstalled." -ForegroundColor Green
+                exit 0
+            }
+            default { Write-Host '  Please answer 1, 2, 3 or 4.' }
         }
     }
 }

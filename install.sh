@@ -19,10 +19,10 @@
 # /Applications, rather than to the root-owned system directory.
 #
 # When an installation already sits where this script would write, you are asked
-# whether to abort, replace it, or install into another directory so both copies
-# can live side by side. On Linux that means the same version, since each version
-# gets its own directory; on macOS it means any version, since every one of them
-# installs as Slicer.app.
+# whether to abort, replace it, install into another directory so both copies can
+# live side by side, or uninstall the existing one. On Linux that means the same
+# version, since each version gets its own directory; on macOS it means any
+# version, since every one of them installs as Slicer.app.
 #
 # Environment overrides:
 #   SLICER_RELEASE_TYPE  stable (default) | preview | any
@@ -30,7 +30,7 @@
 #   SLICER_INSTALL_DIR   where to install Slicer; must be writable without root
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
 #   SLICER_IF_EXISTING   what to do when an installation is already there:
-#                        prompt (default) | abort | reinstall
+#                        prompt (default) | abort | reinstall | uninstall
 #   NO_COLOR             set to disable colored output
 #
 # Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
@@ -326,15 +326,17 @@ prompt_install_dir() {
 # An installation we would destroy already occupies $2 ($1 names it for the
 # user). Decide what to do about it. $3 describes what replacing it would mean,
 # and defaults to reinstalling the very same version; macOS passes its own text,
-# because there any version installs over any other.
+# because there any version installs over any other. $4 names the shell function
+# that removes an installation given its path, invoked by the "Uninstall" choice.
 #
 # Returns 0 when the caller should go ahead and install into the current DEST,
 # and 1 once DEST points at a directory the user picked instead — which the
 # caller must re-check, since that directory may be occupied too.
-# Never returns when the user aborts.
+# Never returns when the user aborts or uninstalls.
 resolve_existing_install() {
   label="$1"; occupied="$2"
   replace_desc="${3:-Reinstall — replace it with a freshly downloaded copy}"
+  uninstall_fn="${4:-}"
 
   case "$SLICER_IF_EXISTING" in
     abort)
@@ -343,8 +345,13 @@ resolve_existing_install() {
     reinstall)
       log "$label is already installed at $occupied; replacing it."
       return 0 ;;
+    uninstall)
+      log "$label is already installed at $occupied; uninstalling it."
+      "$uninstall_fn" "$occupied"
+      log "${C_GREEN}3D Slicer has been uninstalled.${C_RESET}"
+      exit 0 ;;
     prompt) ;;
-    *) err "SLICER_IF_EXISTING must be 'prompt', 'abort' or 'reinstall' (got '$SLICER_IF_EXISTING')." ;;
+    *) err "SLICER_IF_EXISTING must be 'prompt', 'abort', 'reinstall' or 'uninstall' (got '$SLICER_IF_EXISTING')." ;;
   esac
 
   if ! tty_available; then
@@ -358,16 +365,19 @@ resolve_existing_install() {
     printf '        %s\n\n' "$occupied"
     printf '  1) Abort — leave the existing installation untouched\n'
     printf '  2) %s\n' "$replace_desc"
-    printf '  3) Install elsewhere — keep both, in a directory you choose\n\n'
+    printf '  3) Install elsewhere — keep both, in a directory you choose\n'
+    printf '  4) Uninstall — remove the existing installation and exit\n\n'
   } > /dev/tty
 
   while true; do
-    ask 'Choose [1-3] (default 1): ' || { printf '\n' > /dev/tty; ANSWER=1; }
+    ask 'Choose [1-4] (default 1): ' || { printf '\n' > /dev/tty; ANSWER=1; }
     case "$ANSWER" in
       ''|1) log "Aborted; $occupied was left untouched."; exit 0 ;;
       2)    log "Replacing $occupied."; return 0 ;;
       3)    prompt_install_dir; return 1 ;;
-      *)    printf '  Please answer 1, 2 or 3.\n' > /dev/tty ;;
+      4)    "$uninstall_fn" "$occupied"
+            log "${C_GREEN}3D Slicer has been uninstalled.${C_RESET}"; exit 0 ;;
+      *)    printf '  Please answer 1, 2, 3 or 4.\n' > /dev/tty ;;
     esac
   done
 }
@@ -420,6 +430,39 @@ print_deps_hint() {
   fi
 }
 
+# Remove the Linux installation at $1 (a Slicer-<version>-linux-<arch> directory):
+# the directory itself, the launcher and "current version" symlinks that point
+# into it, and the desktop entry when it still launches this copy. Anything that
+# points at a different install is deliberately left alone.
+uninstall_linux() {
+  target="$1"
+  bindir="$HOME/.local/bin"
+  parent="$(dirname "$target")"
+  apps_dir="$HOME/.local/share/applications"
+  desktop_file="$apps_dir/slicer.desktop"
+
+  rm -rf "$target"
+
+  # Drop the launcher and "current version" symlinks only when they still resolve
+  # to the copy we just removed, so links belonging to another install survive.
+  if [ "$(readlink "$bindir/Slicer" 2>/dev/null)" = "$target/Slicer" ]; then
+    rm -f "$bindir/Slicer"
+  fi
+  if [ "$(readlink "$parent/Slicer" 2>/dev/null)" = "$target" ]; then
+    rm -f "$parent/Slicer"
+  fi
+
+  # Remove the desktop entry when its Exec line still launches this copy.
+  if [ -f "$desktop_file" ] && grep -qF "Exec=$target/Slicer " "$desktop_file"; then
+    rm -f "$desktop_file"
+    if have update-desktop-database; then
+      update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  log "Removed $target"
+}
+
 # Add an XDG desktop menu entry so Slicer appears in application launchers.
 install_desktop_entry() {
   appdir="$1"
@@ -469,7 +512,7 @@ install_linux() {
   if [ -n "$PKG_VERSION" ] && [ -n "$PKG_ARCH" ]; then
     pkgdir="Slicer-$PKG_VERSION-linux-$PKG_ARCH"
     while [ -d "$DEST/$pkgdir" ]; do
-      if resolve_existing_install "3D Slicer $PKG_VERSION" "$DEST/$pkgdir"; then break; fi
+      if resolve_existing_install "3D Slicer $PKG_VERSION" "$DEST/$pkgdir" '' uninstall_linux; then break; fi
     done
   fi
 
@@ -492,7 +535,7 @@ install_linux() {
   # rather than silently deleting whatever is sitting there.
   if [ -z "$pkgdir" ]; then
     while [ -d "$appdir" ]; do
-      if resolve_existing_install "3D Slicer" "$appdir"; then break; fi
+      if resolve_existing_install "3D Slicer" "$appdir" '' uninstall_linux; then break; fi
       appdir="$DEST/$(basename "$srcdir")"
     done
   fi
@@ -523,6 +566,19 @@ install_linux() {
 macos_app_version() {
   [ -f "$1/Contents/Info.plist" ] || return 0
   /usr/bin/defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || true
+}
+
+# Remove the Slicer.app bundle at $1, stopping a running instance first so the
+# bundle can be deleted cleanly.
+uninstall_macos() {
+  target="$1"
+  if /usr/bin/pgrep -x Slicer >/dev/null 2>&1; then
+    log "Stopping running Slicer instance…"
+    /usr/bin/pkill -x Slicer 2>/dev/null || true
+    sleep 1
+  fi
+  rm -rf "$target"
+  log "Removed $target"
 }
 
 install_macos() {
@@ -559,7 +615,7 @@ install_macos() {
       replace="Replace — discard it and install the version being downloaded"
     fi
 
-    if resolve_existing_install "$label" "$DEST/Slicer.app" "$replace"; then break; fi
+    if resolve_existing_install "$label" "$DEST/Slicer.app" "$replace" uninstall_macos; then break; fi
   done
 
   # Stop any running instance so the bundle can be replaced cleanly.

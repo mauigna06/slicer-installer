@@ -52,7 +52,7 @@ launcher. These scripts do all of that for you in a single command. They:
   home directory.
 - Add a launcher / menu entry so Slicer is ready to start.
 - Notice when the same version is already installed and let you abort, reinstall,
-  or install side by side.
+  install side by side, or uninstall it.
 
 ## Install
 
@@ -80,6 +80,35 @@ Runs the official installer silently and per-user (no Administrator prompt). All
 of Slicer's dependencies (Qt, Python, VTK, …) are bundled, so nothing else needs
 installing.
 
+## When a version is already installed
+
+Before downloading, the installer checks whether the version it's about to
+install is already there — on Linux and Windows each version lives in its own
+directory, so this means that exact version; on macOS every version installs as
+`Slicer.app`, so it means whatever bundle occupies the target. When it is, and
+`SLICER_IF_EXISTING=prompt` (the default), you're offered four choices:
+
+1. **Abort** — leave the existing installation untouched and exit. This is the
+   default (just press Enter).
+2. **Reinstall** — replace it with a freshly downloaded copy. On macOS, where any
+   version overwrites any other, this discards the current `Slicer.app` for the
+   version being downloaded.
+3. **Install elsewhere** — keep both copies, installing into a directory you
+   choose so the two live side by side.
+4. **Uninstall** — remove the existing installation and exit without installing
+   anything. Linux deletes the version's directory and its launcher, menu entry
+   and symlinks; macOS deletes `Slicer.app`; Windows runs Slicer's own
+   uninstaller silently.
+
+Set `SLICER_IF_EXISTING` to skip the prompt: `abort` takes option 1, `reinstall`
+takes option 2, and `uninstall` takes option 4. To install side by side without
+being asked (option 3), point `SLICER_INSTALL_DIR` at a different directory.
+Option 3 is only offered interactively.
+
+These only apply when the target version is already installed, so
+`SLICER_IF_EXISTING=uninstall` removes that version when it is present and
+otherwise just installs it as usual.
+
 ## Environment overrides
 
 Both installers read the same environment variables:
@@ -89,7 +118,7 @@ Both installers read the same environment variables:
 | `SLICER_RELEASE_TYPE`| `stable` *(default)* · `preview` · `any`        | Which release channel to install from.                                   |
 | `SLICER_VERSION`     | e.g. `5.12.0` *(default: latest)*               | Pin an exact version instead of the latest.                              |
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
-| `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall`    | What to do when that version is already installed.                       |
+| `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 
 `SLICER_INSTALL_DIR` defaults per platform:
@@ -126,6 +155,9 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 # Abort instead of prompting if the version is already installed
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_IF_EXISTING=abort sh
 
+# Uninstall the target version if it is installed, without prompting
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_IF_EXISTING=uninstall sh
+
 # Disable colored output and the logo
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | NO_COLOR=1 sh
 
@@ -156,6 +188,9 @@ $env:SLICER_IF_EXISTING="reinstall"; irm https://raw.githubusercontent.com/mauig
 
 # Abort instead of prompting if the version is already installed
 $env:SLICER_IF_EXISTING="abort"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+
+# Uninstall the target version if it is installed, without prompting
+$env:SLICER_IF_EXISTING="uninstall"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Disable colored output and the logo
 $env:NO_COLOR="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex

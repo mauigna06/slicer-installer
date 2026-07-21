@@ -657,12 +657,15 @@ resolve_existing_install() {
 # Run one package-manager command line during an auto dependency install,
 # echoing it first so the (Docker) build log records exactly what ran. $1 is a
 # command line we assembled ourselves from fixed tokens, so the deliberate word
-# splitting is safe. A failure aborts the script (set -e) — for a Docker build a
-# failed build beats a half-provisioned image that silently lacks libraries.
+# splitting is safe. Any failure is fatal — checked explicitly with err() rather
+# than left to `set -e`, whose handling of a function called from an `&&` list is
+# too shell-dependent to trust: a failed dependency install must fail the whole
+# install, so a Docker build stops instead of baking a broken image that silently
+# lacks the libraries.
 run_deps_cmd() {
   log "Running: $1"
   # shellcheck disable=SC2086
-  $1
+  $1 || err "Dependency installation failed (command: $1)."
 }
 
 # Slicer links against a handful of system libraries that, by default, we

@@ -23,6 +23,8 @@
                              %LOCALAPPDATA%\NA-MIC). Use an ASCII-only path.
         SLICER_IF_EXISTING   what to do when that version is already installed:
                              prompt (default) | abort | reinstall | uninstall
+        SLICER_QUIET         set to silence progress messages, the logo and the
+                             download bar; warnings, errors and prompts still show
 
     Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
 #>
@@ -36,13 +38,18 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
-function Write-Note($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
+# Informational output, suppressed when SLICER_QUIET is set (any non-empty value).
+# Warnings (Write-Warning) and errors (Write-Error) go to their own streams and
+# are never silenced, mirroring log() vs warn()/err() in install.sh.
+function Write-Step($msg) { if (-not $env:SLICER_QUIET) { Write-Host "==> $msg" -ForegroundColor Cyan } }
+function Write-Note($msg) { if (-not $env:SLICER_QUIET) { Write-Host "    $msg" -ForegroundColor DarkGray } }
+function Write-Done($msg) { if (-not $env:SLICER_QUIET) { Write-Host $msg -ForegroundColor Green } }
 
 # Show the colored 3D Slicer logo (best-effort). Virtual-terminal processing is
 # enabled first so the ANSI colors render even in legacy Windows consoles; the
-# logo is skipped when NO_COLOR is set or when output is redirected to a file.
-if (-not $env:NO_COLOR -and -not [Console]::IsOutputRedirected) {
+# logo is skipped when NO_COLOR or SLICER_QUIET is set, or when output is
+# redirected to a file.
+if (-not $env:NO_COLOR -and -not $env:SLICER_QUIET -and -not [Console]::IsOutputRedirected) {
     try {
         if (-not ('Slicer.VT' -as [type])) {
             Add-Type -Namespace Slicer -Name VT -MemberDefinition @'
@@ -592,7 +599,7 @@ function Resolve-ExistingInstall {
         'uninstall' {
             Write-Step "3D Slicer $Version is already installed at $where; uninstalling it."
             Uninstall-Slicer -Existing $Existing
-            Write-Host "3D Slicer has been uninstalled." -ForegroundColor Green
+            Write-Done "3D Slicer has been uninstalled."
             exit 0
         }
     }
@@ -634,7 +641,7 @@ function Resolve-ExistingInstall {
             }
             '4' {
                 Uninstall-Slicer -Existing $Existing
-                Write-Host "3D Slicer has been uninstalled." -ForegroundColor Green
+                Write-Done "3D Slicer has been uninstalled."
                 exit 0
             }
             default { Write-Host '  Please answer 1, 2, 3 or 4.' }
@@ -653,10 +660,11 @@ function Save-UrlWithProgress {
         [string]$Activity = 'Downloading 3D Slicer'
     )
 
-    # Draw the live bar only when stdout is attached to a console. When output is
-    # redirected to a file or pipe, stay silent so the log stays clean, mirroring
-    # the `[ -t 2 ]` guard on curl/wget in install.sh.
-    $showProgress = -not [Console]::IsOutputRedirected
+    # Draw the live bar only when stdout is attached to a console and quiet mode is
+    # off. When output is redirected to a file or pipe, or SLICER_QUIET is set, stay
+    # silent so the log stays clean, mirroring the `[ -t 2 ]` guard on curl/wget in
+    # install.sh.
+    $showProgress = (-not [Console]::IsOutputRedirected) -and (-not $env:SLICER_QUIET)
 
     $req = [Net.HttpWebRequest]::Create($Url)
     $req.AllowAutoRedirect = $true
@@ -806,7 +814,7 @@ try {
     } else {
         Write-Step "Installation finished. Launch 3D Slicer from the Start menu."
     }
-    Write-Host "3D Slicer installation complete." -ForegroundColor Green
+    Write-Done "3D Slicer installation complete."
 }
 finally {
     # Keep cached installers for the next run; only clean up throwaway temp ones.

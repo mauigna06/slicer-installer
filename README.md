@@ -119,6 +119,7 @@ Both installers read the same environment variables:
 | `SLICER_VERSION`     | e.g. `5.12.0` *(default: latest)*               | Pin an exact version instead of the latest.                              |
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
+| `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 
 `SLICER_INSTALL_DIR` defaults per platform:
@@ -161,6 +162,9 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 # Disable colored output and the logo
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | NO_COLOR=1 sh
 
+# Silence progress messages (warnings and errors still show)
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_QUIET=1 sh
+
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
   SLICER_RELEASE_TYPE=preview SLICER_INSTALL_DIR="$HOME/apps/slicer" SLICER_IF_EXISTING=reinstall sh
@@ -194,6 +198,9 @@ $env:SLICER_IF_EXISTING="uninstall"; irm https://raw.githubusercontent.com/mauig
 
 # Disable colored output and the logo
 $env:NO_COLOR="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+
+# Silence progress messages (warnings and errors still show)
+$env:SLICER_QUIET="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Combine several overrides at once
 $env:SLICER_RELEASE_TYPE="preview"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_IF_EXISTING="reinstall"; `

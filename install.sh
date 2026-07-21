@@ -31,6 +31,8 @@
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
 #   SLICER_IF_EXISTING   what to do when an installation is already there:
 #                        prompt (default) | abort | reinstall | uninstall
+#   SLICER_QUIET         set to silence progress messages, the logo and the
+#                        download bar; warnings, errors and prompts still show
 #   NO_COLOR             set to disable colored output
 #
 # Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
@@ -43,6 +45,7 @@ set -eu
 SLICER_RELEASE_TYPE="${SLICER_RELEASE_TYPE:-stable}"
 SLICER_VERSION="${SLICER_VERSION:-}"
 SLICER_IF_EXISTING="${SLICER_IF_EXISTING:-prompt}"
+SLICER_QUIET="${SLICER_QUIET:-}"
 BASE_URL="https://download.slicer.org/download"
 PACKAGES_API="https://slicer-packages.kitware.com/api/v1"
 
@@ -70,16 +73,16 @@ setup_colors() {
   fi
 }
 
-log()  { printf '%s==>%s %s\n' "$C_BLUE" "$C_RESET" "$*"; }
+log()  { [ -z "$SLICER_QUIET" ] || return 0; printf '%s==>%s %s\n' "$C_BLUE" "$C_RESET" "$*"; }
 warn() { printf '%sWARN:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()  { printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Print the colored 3D Slicer logo. Skipped when stdout is not a terminal
-# or when NO_COLOR is set, so piped/redirected output stays clean.
+# Print the colored 3D Slicer logo. Skipped when stdout is not a terminal, when
+# NO_COLOR is set, or in quiet mode, so piped/redirected output stays clean.
 print_logo() {
-  [ -t 1 ] && [ -z "${NO_COLOR:-}" ] || return 0
+  [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -z "$SLICER_QUIET" ] || return 0
   printf '%s%s%s%s%s%s\n' \
     '[38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m ' \
     '[38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;1m [38;2;1;1;1m [38;2;1;1;1m [38;2;0;0;0m [38;2;0;0;0m [38;2;0;0;0m ' \
@@ -371,20 +374,21 @@ require_tools() {
 }
 
 # Download a URL to a file over enforced HTTPS/TLS 1.2, with retries.
-# The live progress bar is shown only when stderr is an interactive terminal.
+# The live progress bar is shown only when stderr is an interactive terminal and
+# SLICER_QUIET is unset.
 # When output is piped, redirected, or logged, the terminal never collapses the
 # bar's carriage returns, so each update would append instead of overwrite and
 # flood the console with '#' characters (burying real error messages). In that
 # case we stay quiet but keep error reporting via --show-error / no -q suppression.
 download() {
   if have curl; then
-    if [ -t 2 ]; then progress='--progress-bar'; else progress='--silent --show-error'; fi
+    if [ -t 2 ] && [ -z "$SLICER_QUIET" ]; then progress='--progress-bar'; else progress='--silent --show-error'; fi
     # shellcheck disable=SC2086
     curl --fail --location --proto '=https' --tlsv1.2 \
          --retry 3 --retry-delay 2 --retry-connrefused \
          $progress --output "$2" "$1"
   elif have wget; then
-    if [ -t 2 ]; then progress='--show-progress'; else progress=''; fi
+    if [ -t 2 ] && [ -z "$SLICER_QUIET" ]; then progress='--show-progress'; else progress=''; fi
     # shellcheck disable=SC2086
     wget --https-only --secure-protocol=TLSv1_2 --tries=3 --timeout=30 \
          $progress -qO "$2" "$1"
@@ -635,6 +639,9 @@ resolve_existing_install() {
 # ever writes under $HOME. So print the command for the detected package manager
 # and let the user decide whether to run it.
 print_deps_hint() {
+  # Quiet mode suppresses the whole hint: its prose goes through log(), but the
+  # install command is a bare printf, so a half-shown hint would be worse.
+  [ -z "$SLICER_QUIET" ] || return 0
   if [ "$(id -u)" -eq 0 ]; then sudo_prefix=''; else sudo_prefix='sudo '; fi
 
   if have apt-get; then

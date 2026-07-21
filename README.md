@@ -65,7 +65,8 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 - **Linux** — extracts Slicer into `~/.local/opt`, links a launcher into
   `~/.local/bin`, and adds a desktop menu entry. It also prints (but never runs)
   the command that installs Slicer's runtime system libraries, so you decide
-  whether to run it.
+  whether to run it — or set `SLICER_INSTALL_DEPS` to have the installer run it
+  for you (see [Building Docker images](#building-docker-images)).
 - **macOS** — mounts the `.dmg` and copies `Slicer.app` into `~/Applications`.
 
 ### Windows
@@ -147,6 +148,7 @@ Both installers read the same environment variables:
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
 | `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed it is reinstalled, unless `SLICER_IF_EXISTING` is `abort` or `uninstall`. |
+| `SLICER_INSTALL_DEPS` | set to any value *(Linux only)*                 | Run the package-manager command that installs Slicer's runtime system libraries, instead of only printing it. Uses `sudo` when not already root. For building Docker images and similar automation. |
 | `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 
@@ -156,6 +158,36 @@ Both installers read the same environment variables:
 - **macOS:** `~/Applications`
 - **Windows:** the installer's default, `%LOCALAPPDATA%\NA-MIC` (use an
   ASCII-only path)
+
+## Building Docker images
+
+On Linux the installer normally only *prints* the command that installs Slicer's
+runtime system libraries, because doing so needs root and this script otherwise
+writes only under `$HOME`. When you're building a container image that's exactly
+what you want automated, so set `SLICER_INSTALL_DEPS` to have the installer run
+that command for you (using `sudo` only when not already root). Combine it with
+`SLICER_NONINTERACTIVE` so the "already installed" prompt never stops the build:
+
+```dockerfile
+FROM ubuntu:24.04
+
+# curl to fetch the installer, ca-certificates for HTTPS.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Slicer and its runtime system libraries in a single step.
+#   SLICER_INSTALL_DEPS   run the apt-get command for Slicer's libraries
+#   SLICER_NONINTERACTIVE never prompt
+RUN curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh \
+    | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 sh
+```
+
+`SLICER_INSTALL_DEPS` picks the right command for the detected package manager
+(`apt-get`, `dnf` or `pacman`) and refreshes the package lists first on `apt`, so
+it works from a bare base image; if none of those package managers is found it
+errors out rather than leaving you with an image that silently lacks the
+libraries. It has no effect on macOS or Windows, where all of Slicer's
+dependencies are bundled.
 
 ## Advanced use of the one-liners
 
@@ -195,6 +227,9 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 
 # Run fully unattended: never prompt (reinstall if the version is already present)
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_NONINTERACTIVE=1 sh
+
+# Linux: also install Slicer's runtime system libraries (for Docker images / automation)
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 sh
 
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \

@@ -11,12 +11,16 @@
 #   * Linux : extracts the tarball into ~/.local/opt, links a launcher into
 #             ~/.local/bin, adds a desktop menu entry, and prints — but never
 #             runs — the command that installs Slicer's runtime libraries.
+#             Set SLICER_INSTALL_DEPS to have it run that command for you.
 #   * macOS : mounts the .dmg and copies Slicer.app into ~/Applications.
 #
-# This never asks for root. Everything lands under $HOME: on Linux the system
-# libraries Slicer needs are left for you to install (or not) afterwards; on
-# macOS the app goes to ~/Applications, which LaunchServices indexes just like
-# /Applications, rather than to the root-owned system directory.
+# By default this never asks for root. Everything lands under $HOME: on Linux the
+# system libraries Slicer needs are left for you to install (or not) afterwards;
+# on macOS the app goes to ~/Applications, which LaunchServices indexes just like
+# /Applications, rather than to the root-owned system directory. The one opt-in
+# exception is SLICER_INSTALL_DEPS (Linux only): it runs the package-manager
+# command that installs those system libraries, using sudo when not already root
+# — meant for building Docker images and similar automation.
 #
 # When an installation already sits where this script would write, you are asked
 # whether to abort, replace it, install into another directory so both copies can
@@ -36,6 +40,11 @@
 #                        reinstalled, unless SLICER_IF_EXISTING is set to abort or
 #                        uninstall. Every other override still applies — in
 #                        particular SLICER_VERSION to pin the version to install.
+#   SLICER_INSTALL_DEPS  set (to any value, Linux only) to actually run the
+#                        package-manager command that installs Slicer's runtime
+#                        system libraries, instead of only printing it. Uses sudo
+#                        when not already root. For building Docker images and
+#                        other automation; pair it with SLICER_NONINTERACTIVE.
 #   SLICER_QUIET         set to silence progress messages, the logo and the
 #                        download bar; warnings, errors and prompts still show
 #   NO_COLOR             set to disable colored output
@@ -51,6 +60,7 @@ SLICER_RELEASE_TYPE="${SLICER_RELEASE_TYPE:-stable}"
 SLICER_VERSION="${SLICER_VERSION:-}"
 SLICER_IF_EXISTING="${SLICER_IF_EXISTING:-prompt}"
 SLICER_NONINTERACTIVE="${SLICER_NONINTERACTIVE:-}"
+SLICER_INSTALL_DEPS="${SLICER_INSTALL_DEPS:-}"
 SLICER_QUIET="${SLICER_QUIET:-}"
 BASE_URL="https://download.slicer.org/download"
 PACKAGES_API="https://slicer-packages.kitware.com/api/v1"
@@ -644,22 +654,47 @@ resolve_existing_install() {
 # ---------------------------------------------------------------------------- #
 # Linux
 # ---------------------------------------------------------------------------- #
-# Slicer links against a handful of system libraries that we deliberately do NOT
-# install. Doing so needs root, and asking a `curl | sh` script for sudo is a far
-# bigger ask than the install itself — the whole point is that this script only
-# ever writes under $HOME. So print the command for the detected package manager
-# and let the user decide whether to run it.
-print_deps_hint() {
-  # Quiet mode suppresses the whole hint: its prose goes through log(), but the
-  # install command is a bare printf, so a half-shown hint would be worse.
-  [ -z "$SLICER_QUIET" ] || return 0
+# Run one package-manager command line during an auto dependency install,
+# echoing it first so the (Docker) build log records exactly what ran. $1 is a
+# command line we assembled ourselves from fixed tokens, so the deliberate word
+# splitting is safe. A failure aborts the script (set -e) — for a Docker build a
+# failed build beats a half-provisioned image that silently lacks libraries.
+run_deps_cmd() {
+  log "Running: $1"
+  # shellcheck disable=SC2086
+  $1
+}
+
+# Slicer links against a handful of system libraries that, by default, we
+# deliberately do NOT install. Doing so needs root, and asking a `curl | sh`
+# script for sudo is a far bigger ask than the install itself — the whole point
+# is that this script only ever writes under $HOME. So print the command for the
+# detected package manager and let the user decide whether to run it.
+#
+# Setting SLICER_INSTALL_DEPS opts into running that command instead of printing
+# it, using sudo when not already root: the mode for building Docker images and
+# other automation where root is available and installing system packages is the
+# whole point.
+handle_linux_deps() {
+  auto="$SLICER_INSTALL_DEPS"
+
+  # Quiet mode suppresses the printed hint: its prose goes through log(), but the
+  # install command is a bare printf, so a half-shown hint would be worse. It
+  # never suppresses an actual auto-install — that still has to happen.
+  [ -n "$auto" ] || [ -z "$SLICER_QUIET" ] || return 0
+
   if [ "$(id -u)" -eq 0 ]; then sudo_prefix=''; else sudo_prefix='sudo '; fi
 
   if have apt-get; then
+    # A fresh container image ships with empty package lists, which would both
+    # fail the install and mislead the libasound2t64 probe below into choosing
+    # the wrong ALSA package. When auto-installing, refresh them first; in hint
+    # mode we only read local lists (apt-cache), which is side-effect free.
+    [ -n "$auto" ] && run_deps_cmd "${sudo_prefix}apt-get update"
+
     # Common Debian/Ubuntu runtime libraries required by Slicer.
     pkgs="libglu1-mesa libpulse-mainloop-glib0 libnss3 qt5dxcb-plugin libsm6"
     # ALSA lib was renamed during the 64-bit time_t transition (Ubuntu 24.04+).
-    # apt-cache reads local package lists only, so this needs no privileges.
     if apt-cache show libasound2t64 >/dev/null 2>&1; then
       pkgs="$pkgs libasound2t64"
     else
@@ -674,10 +709,22 @@ print_deps_hint() {
   elif have pacman; then
     pkgs="glu nss alsa-lib libxrender libxcomposite libxdamage libxrandr"
     pkgs="$pkgs libxcursor libxi libxtst ftgl"
-    cmd="${sudo_prefix}pacman -S --needed $pkgs"
+    # --noconfirm only when auto-installing, so an unattended build never blocks
+    # on a prompt; the printed hint keeps the interactive default for humans.
+    if [ -n "$auto" ]; then confirm='--noconfirm '; else confirm=''; fi
+    cmd="${sudo_prefix}pacman -S --needed ${confirm}$pkgs"
   else
+    if [ -n "$auto" ]; then
+      err "SLICER_INSTALL_DEPS is set but no supported package manager (apt-get, dnf, pacman) was found; install Slicer's runtime libraries manually."
+    fi
     warn "Unrecognized package manager. If Slicer fails to start, install its"
     warn "runtime libraries manually (see the Slicer docs)."
+    return 0
+  fi
+
+  if [ -n "$auto" ]; then
+    run_deps_cmd "$cmd"
+    log "${C_GREEN}Slicer's runtime system libraries are installed.${C_RESET}"
     return 0
   fi
 
@@ -949,9 +996,10 @@ main() {
 
   log "${C_GREEN}3D Slicer installation complete.${C_RESET}"
 
-  # Printed last so the one thing that may still need the user's attention —
-  # and their sudo password — is the last thing they read.
-  if [ "$OS" = Linux ]; then print_deps_hint; fi
+  # Left for last so the one thing that may still need the user's attention —
+  # and their sudo password — is the last thing they read (or, with
+  # SLICER_INSTALL_DEPS, the last thing that runs).
+  if [ "$OS" = Linux ]; then handle_linux_deps; fi
 }
 
 main "$@"

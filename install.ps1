@@ -30,6 +30,7 @@
                              - in particular SLICER_VERSION to pin the version.
         SLICER_QUIET         set to silence progress messages, the logo and the
                              download bar; warnings, errors and prompts still show
+        NO_COLOR             set to disable colored output
 
     Docs: https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html
 #>
@@ -415,20 +416,33 @@ function Resolve-SlicerItemId {
     return $null
 }
 
-function Get-SlicerSha512 {
+# Fetch the item's metadata once and read both the checksum and the version from
+# it, so a single round-trip backs both values (install.sh likewise fetches the
+# blob once). Property access goes through PSObject.Properties because
+# Set-StrictMode turns a missing field into a terminating error rather than $null.
+#
+# A digest we cannot recognize is worse than no digest at all: it would fail every
+# comparison and abort an otherwise sound download. So a checksum that is not
+# exactly 128 hex characters (a SHA-512) is discarded here, degrading to an
+# unverified download, exactly as install.sh does. Best-effort throughout: any
+# failure leaves the field $null.
+function Get-SlicerMeta {
     param([string]$ItemId)
+    $result = [pscustomobject]@{ Sha512 = $null; Version = $null }
     try {
-        $meta = Invoke-RestMethod -Uri "$packagesApi/item/$ItemId" -UseBasicParsing
-        return [string]$meta.meta.sha512
-    } catch { return $null }
-}
-
-function Get-SlicerVersion {
-    param([string]$ItemId)
-    try {
-        $meta = Invoke-RestMethod -Uri "$packagesApi/item/$ItemId" -UseBasicParsing
-        return [string]$meta.meta.version
-    } catch { return $null }
+        $item = Invoke-RestMethod -Uri "$packagesApi/item/$ItemId" -UseBasicParsing
+        if ($item.PSObject.Properties['meta'] -and $item.meta) {
+            $m = $item.meta
+            if ($m.PSObject.Properties['sha512']) {
+                $sha = ([string]$m.sha512).Trim().ToLower()
+                if ($sha -match '^[0-9a-f]{128}$') { $result.Sha512 = $sha }
+            }
+            if ($m.PSObject.Properties['version']) {
+                $result.Version = [string]$m.version
+            }
+        }
+    } catch { }
+    return $result
 }
 
 # ---------------------------------------------------------------------------- #
@@ -669,7 +683,9 @@ function Save-UrlWithProgress {
     param(
         [Parameter(Mandatory)] [string]$Url,
         [Parameter(Mandatory)] [string]$OutFile,
-        [string]$Activity = 'Downloading 3D Slicer'
+        [string]$Activity = 'Downloading 3D Slicer',
+        [int]$MaxAttempts = 3,
+        [int]$RetryDelaySeconds = 2
     )
 
     # Draw the live bar only when stdout is attached to a console and quiet mode is
@@ -678,40 +694,56 @@ function Save-UrlWithProgress {
     # install.sh.
     $showProgress = (-not [Console]::IsOutputRedirected) -and (-not $env:SLICER_QUIET)
 
-    $req = [Net.HttpWebRequest]::Create($Url)
-    $req.AllowAutoRedirect = $true
-    $req.UserAgent = 'slicer-installer (PowerShell)'
-    $resp   = $req.GetResponse()
-    $total  = [int64]$resp.ContentLength
-    $stream = $resp.GetResponseStream()
-    $file   = [IO.File]::Create($OutFile)
-    try {
-        $buffer   = [byte[]]::new(1MB)
-        $read     = [int64]0
-        $lastTick = 0
-        while (($n = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $file.Write($buffer, 0, $n)
-            $read += $n
-            # Refresh the bar at most ~10x/sec so Write-Progress never becomes the
-            # bottleneck on a fast connection.
-            $now = [Environment]::TickCount
-            if ($showProgress -and $now - $lastTick -ge 100) {
-                $lastTick = $now
-                if ($total -gt 0) {
-                    Write-Progress -Activity $Activity `
-                        -Status ("{0:N1} / {1:N1} MB" -f ($read / 1MB), ($total / 1MB)) `
-                        -PercentComplete ([int](($read * 100) / $total))
-                } else {
-                    Write-Progress -Activity $Activity `
-                        -Status ("{0:N1} MB" -f ($read / 1MB))
+    # Retry a failed transfer a few times, mirroring curl's
+    # --retry 3 --retry-delay 2 in install.sh, so a transient network hiccup does
+    # not abort the whole install. Each attempt reopens the request and truncates
+    # the output file, so a partial download from a failed try is never kept.
+    for ($attempt = 1; ; $attempt++) {
+        $req = [Net.HttpWebRequest]::Create($Url)
+        $req.AllowAutoRedirect = $true
+        $req.UserAgent = 'slicer-installer (PowerShell)'
+
+        # Assigned inside the try; nulled here so the finally can dispose only what
+        # was actually opened (Set-StrictMode forbids referencing unset vars).
+        $resp = $null; $stream = $null; $file = $null
+        try {
+            $resp   = $req.GetResponse()
+            $total  = [int64]$resp.ContentLength
+            $stream = $resp.GetResponseStream()
+            $file   = [IO.File]::Create($OutFile)
+
+            $buffer   = [byte[]]::new(1MB)
+            $read     = [int64]0
+            $lastTick = 0
+            while (($n = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $file.Write($buffer, 0, $n)
+                $read += $n
+                # Refresh the bar at most ~10x/sec so Write-Progress never becomes the
+                # bottleneck on a fast connection.
+                $now = [Environment]::TickCount
+                if ($showProgress -and $now - $lastTick -ge 100) {
+                    $lastTick = $now
+                    if ($total -gt 0) {
+                        Write-Progress -Activity $Activity `
+                            -Status ("{0:N1} / {1:N1} MB" -f ($read / 1MB), ($total / 1MB)) `
+                            -PercentComplete ([int](($read * 100) / $total))
+                    } else {
+                        Write-Progress -Activity $Activity `
+                            -Status ("{0:N1} MB" -f ($read / 1MB))
+                    }
                 }
             }
+            return
+        } catch {
+            if ($attempt -ge $MaxAttempts) { throw }
+            Write-Warning "Download attempt $attempt failed: $($_.Exception.Message). Retrying in $RetryDelaySeconds s..."
+            Start-Sleep -Seconds $RetryDelaySeconds
+        } finally {
+            if ($showProgress) { Write-Progress -Activity $Activity -Completed }
+            if ($file)   { $file.Dispose() }
+            if ($stream) { $stream.Dispose() }
+            if ($resp)   { $resp.Dispose() }
         }
-    } finally {
-        if ($showProgress) { Write-Progress -Activity $Activity -Completed }
-        $file.Dispose()
-        $stream.Dispose()
-        $resp.Dispose()
     }
 }
 
@@ -722,8 +754,9 @@ $keepInstaller = $false
 
 try {
     $itemId   = Resolve-SlicerItemId -Url $downloadUrl
-    $expected = if ($itemId) { Get-SlicerSha512 -ItemId $itemId } else { $null }
-    $version  = if ($itemId) { Get-SlicerVersion -ItemId $itemId } else { $null }
+    $meta     = if ($itemId) { Get-SlicerMeta -ItemId $itemId } else { $null }
+    $expected = if ($meta) { $meta.Sha512 } else { $null }
+    $version  = if ($meta) { $meta.Version } else { $null }
     $source   = if ($itemId) { "$packagesApi/item/$itemId/download" } else { $downloadUrl }
 
     # $null means "let the installer pick its own directory".

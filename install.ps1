@@ -653,6 +653,11 @@ function Save-UrlWithProgress {
         [string]$Activity = 'Downloading 3D Slicer'
     )
 
+    # Draw the live bar only when stdout is attached to a console. When output is
+    # redirected to a file or pipe, stay silent so the log stays clean, mirroring
+    # the `[ -t 2 ]` guard on curl/wget in install.sh.
+    $showProgress = -not [Console]::IsOutputRedirected
+
     $req = [Net.HttpWebRequest]::Create($Url)
     $req.AllowAutoRedirect = $true
     $req.UserAgent = 'slicer-installer (PowerShell)'
@@ -670,7 +675,7 @@ function Save-UrlWithProgress {
             # Refresh the bar at most ~10x/sec so Write-Progress never becomes the
             # bottleneck on a fast connection.
             $now = [Environment]::TickCount
-            if ($now - $lastTick -ge 100) {
+            if ($showProgress -and $now - $lastTick -ge 100) {
                 $lastTick = $now
                 if ($total -gt 0) {
                     Write-Progress -Activity $Activity `
@@ -683,7 +688,7 @@ function Save-UrlWithProgress {
             }
         }
     } finally {
-        Write-Progress -Activity $Activity -Completed
+        if ($showProgress) { Write-Progress -Activity $Activity -Completed }
         $file.Dispose()
         $stream.Dispose()
         $resp.Dispose()

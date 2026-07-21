@@ -109,6 +109,33 @@ These only apply when the target version is already installed, so
 `SLICER_IF_EXISTING=uninstall` removes that version when it is present and
 otherwise just installs it as usual.
 
+### Non-interactive mode (automations / CI)
+
+This prompt is the only point where either installer stops for input, so setting
+`SLICER_NONINTERACTIVE` (to any value) is enough to run fully unattended: an
+already-installed target version is reinstalled rather than prompted about. Set
+`SLICER_IF_EXISTING=abort` or `=uninstall` alongside it to pick a different action
+for that case. When there is no terminal at all — piped through `curl | sh`, in a
+container, or under CI — the installers already detect it and reinstall without
+hanging, so `SLICER_NONINTERACTIVE` mainly matters when a terminal *is* attached
+but you still want zero prompts.
+
+Every other override still applies in non-interactive mode. In particular,
+`SLICER_VERSION` pins the exact version to install (and `SLICER_RELEASE_TYPE`
+chooses the channel), so automations can install a known version reproducibly:
+
+```sh
+# Linux / macOS: install a pinned version, no prompts, quiet output
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
+  SLICER_NONINTERACTIVE=1 SLICER_VERSION=5.12.0 SLICER_QUIET=1 sh
+```
+
+```powershell
+# Windows: install a pinned version, no prompts, quiet output
+$env:SLICER_NONINTERACTIVE="1"; $env:SLICER_VERSION="5.12.0"; $env:SLICER_QUIET="1"
+irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+```
+
 ## Environment overrides
 
 Both installers read the same environment variables:
@@ -119,6 +146,7 @@ Both installers read the same environment variables:
 | `SLICER_VERSION`     | e.g. `5.12.0` *(default: latest)*               | Pin an exact version instead of the latest.                              |
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
+| `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed it is reinstalled, unless `SLICER_IF_EXISTING` is `abort` or `uninstall`. |
 | `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 
@@ -165,6 +193,9 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 # Silence progress messages (warnings and errors still show)
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_QUIET=1 sh
 
+# Run fully unattended: never prompt (reinstall if the version is already present)
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_NONINTERACTIVE=1 sh
+
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
   SLICER_RELEASE_TYPE=preview SLICER_INSTALL_DIR="$HOME/apps/slicer" SLICER_IF_EXISTING=reinstall sh
@@ -201,6 +232,9 @@ $env:NO_COLOR="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-instal
 
 # Silence progress messages (warnings and errors still show)
 $env:SLICER_QUIET="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+
+# Run fully unattended: never prompt (reinstall if the version is already present)
+$env:SLICER_NONINTERACTIVE="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Combine several overrides at once
 $env:SLICER_RELEASE_TYPE="preview"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_IF_EXISTING="reinstall"; `

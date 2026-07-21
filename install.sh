@@ -31,6 +31,11 @@
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
 #   SLICER_IF_EXISTING   what to do when an installation is already there:
 #                        prompt (default) | abort | reinstall | uninstall
+#   SLICER_NONINTERACTIVE  set (to any value) to never prompt, for automations
+#                        and CI. If the target version is already installed it is
+#                        reinstalled, unless SLICER_IF_EXISTING is set to abort or
+#                        uninstall. Every other override still applies — in
+#                        particular SLICER_VERSION to pin the version to install.
 #   SLICER_QUIET         set to silence progress messages, the logo and the
 #                        download bar; warnings, errors and prompts still show
 #   NO_COLOR             set to disable colored output
@@ -45,6 +50,7 @@ set -eu
 SLICER_RELEASE_TYPE="${SLICER_RELEASE_TYPE:-stable}"
 SLICER_VERSION="${SLICER_VERSION:-}"
 SLICER_IF_EXISTING="${SLICER_IF_EXISTING:-prompt}"
+SLICER_NONINTERACTIVE="${SLICER_NONINTERACTIVE:-}"
 SLICER_QUIET="${SLICER_QUIET:-}"
 BASE_URL="https://download.slicer.org/download"
 PACKAGES_API="https://slicer-packages.kitware.com/api/v1"
@@ -601,6 +607,11 @@ resolve_existing_install() {
     prompt) ;;
     *) err "SLICER_IF_EXISTING must be 'prompt', 'abort', 'reinstall' or 'uninstall' (got '$SLICER_IF_EXISTING')." ;;
   esac
+
+  if [ -n "$SLICER_NONINTERACTIVE" ]; then
+    log "$label is already installed at $occupied; reinstalling (non-interactive mode)."
+    return 0
+  fi
 
   if ! tty_available; then
     warn "$label is already installed at $occupied, and there is no terminal to ask"

@@ -23,6 +23,11 @@
                              %LOCALAPPDATA%\NA-MIC). Use an ASCII-only path.
         SLICER_IF_EXISTING   what to do when that version is already installed:
                              prompt (default) | abort | reinstall | uninstall
+        SLICER_NONINTERACTIVE  set (to any value) to never prompt, for automations
+                             and CI. If the target version is already installed it
+                             is reinstalled, unless SLICER_IF_EXISTING is set to
+                             abort or uninstall. Every other override still applies
+                             - in particular SLICER_VERSION to pin the version.
         SLICER_QUIET         set to silence progress messages, the logo and the
                              download bar; warnings, errors and prompts still show
 
@@ -602,6 +607,13 @@ function Resolve-ExistingInstall {
             Write-Done "3D Slicer has been uninstalled."
             exit 0
         }
+    }
+
+    # Asked not to prompt (automation/CI): reinstall in place, matching the
+    # no-console fallback below. abort/reinstall/uninstall were handled above.
+    if ($env:SLICER_NONINTERACTIVE) {
+        Write-Note "3D Slicer $Version is already installed at $where; reinstalling (non-interactive mode)."
+        return $inPlace
     }
 
     # No console to ask on (CI, a scheduled task, redirected input): reinstalling

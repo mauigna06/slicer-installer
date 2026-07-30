@@ -137,6 +137,20 @@ $env:SLICER_NONINTERACTIVE="1"; $env:SLICER_VERSION="5.12.0"; $env:SLICER_QUIET=
 irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 ```
 
+When even a version is not precise enough — preview builds all share the same
+version number, and a stable version can be rebuilt — `SLICER_REVISION` pins
+one exact build by its Kitware revision (the number Slicer shows next to the
+version, e.g. `5.12.3` revision `34627`), so every machine gets a byte-identical
+package. A revision already names a single build across all channels, so
+`SLICER_RELEASE_TYPE` is ignored, and combining it with `SLICER_VERSION` is an
+error:
+
+```sh
+# Linux / macOS: install one exact build by revision
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
+  SLICER_NONINTERACTIVE=1 SLICER_REVISION=34627 SLICER_QUIET=1 sh
+```
+
 ## Environment overrides
 
 Both installers read the same environment variables:
@@ -145,6 +159,7 @@ Both installers read the same environment variables:
 |----------------------|-------------------------------------------------|--------------------------------------------------------------------------|
 | `SLICER_RELEASE_TYPE`| `stable` *(default)* · `preview` · `any`        | Which release channel to install from.                                   |
 | `SLICER_VERSION`     | e.g. `5.12.0` *(default: latest)*               | Pin an exact version instead of the latest.                              |
+| `SLICER_REVISION`    | e.g. `34627`                                    | Pin one exact build by its Kitware revision. A revision is unambiguous across channels, so `SLICER_RELEASE_TYPE` is ignored; cannot be combined with `SLICER_VERSION`. |
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
 | `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed it is reinstalled, unless `SLICER_IF_EXISTING` is `abort` or `uninstall`. |

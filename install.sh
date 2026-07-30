@@ -31,6 +31,10 @@
 # Environment overrides:
 #   SLICER_RELEASE_TYPE  stable (default) | preview | any
 #   SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
+#   SLICER_REVISION      pin one exact build by its Kitware revision, e.g. 34627.
+#                        A revision is unambiguous across channels, so
+#                        SLICER_RELEASE_TYPE is ignored; cannot be combined
+#                        with SLICER_VERSION
 #   SLICER_INSTALL_DIR   where to install Slicer; must be writable without root
 #                        (default: ~/.local/opt on Linux, ~/Applications on macOS)
 #   SLICER_IF_EXISTING   what to do when an installation is already there:
@@ -58,6 +62,7 @@ set -eu
 
 SLICER_RELEASE_TYPE="${SLICER_RELEASE_TYPE:-stable}"
 SLICER_VERSION="${SLICER_VERSION:-}"
+SLICER_REVISION="${SLICER_REVISION:-}"
 SLICER_IF_EXISTING="${SLICER_IF_EXISTING:-prompt}"
 SLICER_NONINTERACTIVE="${SLICER_NONINTERACTIVE:-}"
 SLICER_INSTALL_DEPS="${SLICER_INSTALL_DEPS:-}"
@@ -448,15 +453,28 @@ json_field() {
 # build is already installed without downloading half a gigabyte to find out.
 resolve_package() {
   os="$1"
-  # The download server speaks release/nightly/any; map our user-facing names.
-  case "$SLICER_RELEASE_TYPE" in
-    stable)  stability=release ;;
-    preview) stability=nightly ;;
-    any)     stability=any ;;
-    *) err "SLICER_RELEASE_TYPE must be 'stable', 'preview' or 'any' (got '$SLICER_RELEASE_TYPE')." ;;
-  esac
-  PKG_URL="$BASE_URL?os=$os&stability=$stability"
-  [ -n "$SLICER_VERSION" ] && PKG_URL="$PKG_URL&version=$SLICER_VERSION"
+  if [ -n "$SLICER_REVISION" ]; then
+    # A revision names one exact build, so it cannot be combined with a version
+    # pin (the server rejects that with a 400), and it makes the channel
+    # irrelevant: sending a stability filter alongside it would 404 a pinned
+    # preview build, so the URL carries the revision alone.
+    [ -z "$SLICER_VERSION" ] || err "SLICER_VERSION and SLICER_REVISION cannot both be set; pick one way to pin the build."
+    case "$SLICER_REVISION" in
+      *[!0-9]*|'') err "SLICER_REVISION must be a number, e.g. 34627 (got '$SLICER_REVISION')." ;;
+    esac
+    [ "$SLICER_RELEASE_TYPE" = stable ] || warn "SLICER_REVISION pins one exact build; SLICER_RELEASE_TYPE='$SLICER_RELEASE_TYPE' is ignored."
+    PKG_URL="$BASE_URL?os=$os&revision=$SLICER_REVISION"
+  else
+    # The download server speaks release/nightly/any; map our user-facing names.
+    case "$SLICER_RELEASE_TYPE" in
+      stable)  stability=release ;;
+      preview) stability=nightly ;;
+      any)     stability=any ;;
+      *) err "SLICER_RELEASE_TYPE must be 'stable', 'preview' or 'any' (got '$SLICER_RELEASE_TYPE')." ;;
+    esac
+    PKG_URL="$BASE_URL?os=$os&stability=$stability"
+    [ -n "$SLICER_VERSION" ] && PKG_URL="$PKG_URL&version=$SLICER_VERSION"
+  fi
 
   PKG_ITEM_ID=$(resolve_item_id "$PKG_URL")
   PKG_SHA='' PKG_VERSION='' PKG_ARCH=''
@@ -466,6 +484,15 @@ resolve_package() {
   PKG_SHA=$(json_field "$meta" sha512)
   PKG_VERSION=$(json_field "$meta" version)
   PKG_ARCH=$(json_field "$meta" arch)
+
+  # The one guarantee a revision pin makes is which build you get; hold the
+  # server to it whenever the metadata is available to check.
+  if [ -n "$SLICER_REVISION" ]; then
+    pkg_rev=$(json_field "$meta" revision)
+    if [ -n "$pkg_rev" ] && [ "$pkg_rev" != "$SLICER_REVISION" ]; then
+      err "The server resolved revision $pkg_rev instead of the requested $SLICER_REVISION."
+    fi
+  fi
 
   # A digest we can't recognize is worse than no digest at all: it would fail
   # every comparison and abort an otherwise sound download.

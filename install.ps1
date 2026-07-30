@@ -19,6 +19,10 @@
     Environment overrides:
         SLICER_RELEASE_TYPE  stable (default) | preview | any
         SLICER_VERSION       pin an exact version, e.g. 5.12.0 (default: latest)
+        SLICER_REVISION      pin one exact build by its Kitware revision,
+                             e.g. 34627. A revision is unambiguous across
+                             channels, so SLICER_RELEASE_TYPE is ignored;
+                             cannot be combined with SLICER_VERSION
         SLICER_INSTALL_DIR   install directory (default: the installer's default,
                              %LOCALAPPDATA%\NA-MIC). Use an ASCII-only path.
         SLICER_IF_EXISTING   what to do when that version is already installed:
@@ -379,8 +383,27 @@ $stability = switch ($releaseType) {
     }
 }
 $packagesApi = 'https://slicer-packages.kitware.com/api/v1'
-$downloadUrl = "https://download.slicer.org/download?os=win&stability=$stability"
-if ($env:SLICER_VERSION) { $downloadUrl += "&version=$($env:SLICER_VERSION)" }
+if ($env:SLICER_REVISION) {
+    # A revision names one exact build, so it cannot be combined with a version
+    # pin (the server rejects that with a 400), and it makes the channel
+    # irrelevant: sending a stability filter alongside it would 404 a pinned
+    # preview build, so the URL carries the revision alone.
+    if ($env:SLICER_VERSION) {
+        Write-Error 'SLICER_VERSION and SLICER_REVISION cannot both be set; pick one way to pin the build.'
+        exit 1
+    }
+    if ($env:SLICER_REVISION -notmatch '^[0-9]+$') {
+        Write-Error "SLICER_REVISION must be a number, e.g. 34627 (got '$($env:SLICER_REVISION)')."
+        exit 1
+    }
+    if ($releaseType -ne 'stable') {
+        Write-Warning "SLICER_REVISION pins one exact build; SLICER_RELEASE_TYPE='$releaseType' is ignored."
+    }
+    $downloadUrl = "https://download.slicer.org/download?os=win&revision=$($env:SLICER_REVISION)"
+} else {
+    $downloadUrl = "https://download.slicer.org/download?os=win&stability=$stability"
+    if ($env:SLICER_VERSION) { $downloadUrl += "&version=$($env:SLICER_VERSION)" }
+}
 
 $onExisting = if ($env:SLICER_IF_EXISTING) { $env:SLICER_IF_EXISTING.ToLower() } else { 'prompt' }
 if ($onExisting -notin @('prompt', 'abort', 'reinstall', 'uninstall')) {
@@ -428,7 +451,7 @@ function Resolve-SlicerItemId {
 # failure leaves the field $null.
 function Get-SlicerMeta {
     param([string]$ItemId)
-    $result = [pscustomobject]@{ Sha512 = $null; Version = $null }
+    $result = [pscustomobject]@{ Sha512 = $null; Version = $null; Revision = $null }
     try {
         $item = Invoke-RestMethod -Uri "$packagesApi/item/$ItemId" -UseBasicParsing
         if ($item.PSObject.Properties['meta'] -and $item.meta) {
@@ -439,6 +462,9 @@ function Get-SlicerMeta {
             }
             if ($m.PSObject.Properties['version']) {
                 $result.Version = [string]$m.version
+            }
+            if ($m.PSObject.Properties['revision']) {
+                $result.Revision = [string]$m.revision
             }
         }
     } catch { }
@@ -758,6 +784,12 @@ try {
     $expected = if ($meta) { $meta.Sha512 } else { $null }
     $version  = if ($meta) { $meta.Version } else { $null }
     $source   = if ($itemId) { "$packagesApi/item/$itemId/download" } else { $downloadUrl }
+
+    # The one guarantee a revision pin makes is which build you get; hold the
+    # server to it whenever the metadata is available to check.
+    if ($env:SLICER_REVISION -and $meta -and $meta.Revision -and $meta.Revision -ne $env:SLICER_REVISION) {
+        throw "The server resolved revision $($meta.Revision) instead of the requested $($env:SLICER_REVISION)."
+    }
 
     # $null means "let the installer pick its own directory".
     $targetDir = if ($env:SLICER_INSTALL_DIR) { $env:SLICER_INSTALL_DIR } else { $null }

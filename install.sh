@@ -40,9 +40,13 @@
 #   SLICER_IF_EXISTING   what to do when an installation is already there:
 #                        prompt (default) | abort | reinstall | uninstall
 #   SLICER_NONINTERACTIVE  set (to any value) to never prompt, for automations
-#                        and CI. If the target version is already installed it is
-#                        reinstalled, unless SLICER_IF_EXISTING is set to abort or
-#                        uninstall. Every other override still applies — in
+#                        and CI. If the target version is already installed the
+#                        script exits 0 without downloading anything, so repeated
+#                        runs converge instead of re-fetching the package; set
+#                        SLICER_IF_EXISTING=reinstall to replace it anyway. On
+#                        macOS an installed *different* version is still
+#                        replaced, since every version installs as the same
+#                        Slicer.app. Every other override still applies — in
 #                        particular SLICER_VERSION to pin the version to install.
 #   SLICER_INSTALL_DEPS  set (to any value, Linux only) to actually run the
 #                        package-manager command that installs Slicer's runtime
@@ -628,6 +632,11 @@ resolve_existing_install() {
   label="$1"; occupied="$2"
   replace_desc="${3:-Reinstall — replace it with a freshly downloaded copy}"
   uninstall_fn="${4:-}"
+  # $3 is empty exactly when the existing copy is the very version being
+  # installed: Linux resolves per-version directories, and macOS passes its own
+  # replacement text only when the versions differ.
+  same_version=''
+  [ -z "${3:-}" ] && same_version=1
 
   case "$SLICER_IF_EXISTING" in
     abort)
@@ -645,8 +654,18 @@ resolve_existing_install() {
     *) err "SLICER_IF_EXISTING must be 'prompt', 'abort', 'reinstall' or 'uninstall' (got '$SLICER_IF_EXISTING')." ;;
   esac
 
+  # With no way to ask — non-interactive mode, or no terminal — the target
+  # version being already installed is the converged state, so repeated
+  # automated runs must succeed without re-downloading the package. A different
+  # version (macOS only) is still replaced below: that is an upgrade.
+  if [ -n "$same_version" ] && { [ -n "$SLICER_NONINTERACTIVE" ] || ! tty_available; }; then
+    log "$label is already installed at $occupied; nothing to do."
+    log "Set SLICER_IF_EXISTING=reinstall to reinstall it."
+    exit 0
+  fi
+
   if [ -n "$SLICER_NONINTERACTIVE" ]; then
-    log "$label is already installed at $occupied; reinstalling (non-interactive mode)."
+    log "$label is already installed at $occupied; replacing it (non-interactive mode)."
     return 0
   fi
 

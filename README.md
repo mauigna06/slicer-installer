@@ -114,12 +114,16 @@ otherwise just installs it as usual.
 
 This prompt is the only point where either installer stops for input, so setting
 `SLICER_NONINTERACTIVE` (to any value) is enough to run fully unattended: an
-already-installed target version is reinstalled rather than prompted about. Set
-`SLICER_IF_EXISTING=abort` or `=uninstall` alongside it to pick a different action
-for that case. When there is no terminal at all — piped through `curl | sh`, in a
-container, or under CI — the installers already detect it and reinstall without
-hanging, so `SLICER_NONINTERACTIVE` mainly matters when a terminal *is* attached
-but you still want zero prompts.
+already-installed target version exits 0 without downloading anything, so
+repeated runs (a config-management converge, a re-run CI job) are cheap no-ops.
+Set `SLICER_IF_EXISTING=reinstall` alongside it to replace the existing copy
+anyway, or `=uninstall` to remove it. On macOS an installed *different* version
+is still replaced, since every version installs as the same `Slicer.app` — that
+is an upgrade, not a redundant reinstall. When there is no terminal at all —
+piped through `curl | sh`, in a container, or under CI — the installers detect
+it and apply the same rule (already-installed target version → exit 0, no
+download) rather than hang, so `SLICER_NONINTERACTIVE` mainly matters when a
+terminal *is* attached but you still want zero prompts.
 
 Every other override still applies in non-interactive mode. In particular,
 `SLICER_VERSION` pins the exact version to install (and `SLICER_RELEASE_TYPE`
@@ -162,7 +166,7 @@ Both installers read the same environment variables:
 | `SLICER_REVISION`    | e.g. `34627`                                    | Pin one exact build by its Kitware revision. A revision is unambiguous across channels, so `SLICER_RELEASE_TYPE` is ignored; cannot be combined with `SLICER_VERSION`. |
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
-| `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed it is reinstalled, unless `SLICER_IF_EXISTING` is `abort` or `uninstall`. |
+| `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed the script exits 0 without downloading anything, so repeated runs converge; set `SLICER_IF_EXISTING=reinstall` to replace it anyway. |
 | `SLICER_INSTALL_DEPS` | set to any value *(Linux only)*                 | Run the package-manager command that installs Slicer's runtime system libraries, instead of only printing it. Uses `sudo` when not already root. For building Docker images and similar automation. |
 | `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |

@@ -28,10 +28,12 @@
         SLICER_IF_EXISTING   what to do when that version is already installed:
                              prompt (default) | abort | reinstall | uninstall
         SLICER_NONINTERACTIVE  set (to any value) to never prompt, for automations
-                             and CI. If the target version is already installed it
-                             is reinstalled, unless SLICER_IF_EXISTING is set to
-                             abort or uninstall. Every other override still applies
-                             - in particular SLICER_VERSION to pin the version.
+                             and CI. If the target version is already installed
+                             the script exits 0 without downloading anything, so
+                             repeated runs converge instead of re-fetching the
+                             package; set SLICER_IF_EXISTING=reinstall to replace
+                             it anyway. Every other override still applies - in
+                             particular SLICER_VERSION to pin the version.
         SLICER_QUIET         set to silence progress messages, the logo and the
                              download bar; warnings, errors and prompts still show
         NO_COLOR             set to disable colored output
@@ -649,19 +651,14 @@ function Resolve-ExistingInstall {
         }
     }
 
-    # Asked not to prompt (automation/CI): reinstall in place, matching the
-    # no-console fallback below. abort/reinstall/uninstall were handled above.
-    if ($env:SLICER_NONINTERACTIVE) {
-        Write-Note "3D Slicer $Version is already installed at $where; reinstalling (non-interactive mode)."
-        return $inPlace
-    }
-
-    # No console to ask on (CI, a scheduled task, redirected input): reinstalling
-    # is what this script has always done, so keep doing it rather than hang.
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
-        Write-Warning "3D Slicer $Version is already installed at $where, and there is no"
-        Write-Warning "terminal to ask what to do. Reinstalling. Set SLICER_IF_EXISTING=abort to skip."
-        return $inPlace
+    # With no way to ask - non-interactive mode, or no console (CI, a scheduled
+    # task, redirected input) - the requested version being already installed is
+    # the converged state, so repeated automated runs must succeed without
+    # re-downloading the package. abort/reinstall/uninstall were handled above.
+    if ($env:SLICER_NONINTERACTIVE -or -not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Write-Step "3D Slicer $Version is already installed at $where; nothing to do."
+        Write-Note "Set SLICER_IF_EXISTING=reinstall to reinstall it."
+        exit 0
     }
 
     Write-Host ''

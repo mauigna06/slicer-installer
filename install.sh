@@ -52,7 +52,10 @@
 #                        package-manager command that installs Slicer's runtime
 #                        system libraries, instead of only printing it. Uses sudo
 #                        when not already root. For building Docker images and
-#                        other automation; pair it with SLICER_NONINTERACTIVE.
+#                        other automation; pair it with SLICER_NONINTERACTIVE,
+#                        under which sudo runs with -n and fails fast with a
+#                        clear error if it would need a password, instead of
+#                        hanging on a prompt no one can answer.
 #   SLICER_QUIET         set to silence progress messages, the logo and the
 #                        download bar; warnings, errors and prompts still show
 #   NO_COLOR             set to disable colored output
@@ -732,7 +735,20 @@ handle_linux_deps() {
   # never suppresses an actual auto-install — that still has to happen.
   [ -n "$auto" ] || [ -z "$SLICER_QUIET" ] || return 0
 
-  if [ "$(id -u)" -eq 0 ]; then sudo_prefix=''; else sudo_prefix='sudo '; fi
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo_prefix=''
+  elif [ -n "$auto" ] && [ -n "$SLICER_NONINTERACTIVE" ]; then
+    # A sudo password prompt would hang forever in CI, where nothing can type
+    # the password. -n makes sudo fail immediately instead; probe it up front
+    # so the failure names the real problem rather than surfacing as a sudo
+    # error in the middle of the dependency install.
+    if ! have sudo || ! sudo -n true 2>/dev/null; then
+      err "SLICER_INSTALL_DEPS needs root, and SLICER_NONINTERACTIVE forbids a sudo password prompt; run as root or configure passwordless sudo."
+    fi
+    sudo_prefix='sudo -n '
+  else
+    sudo_prefix='sudo '
+  fi
 
   if have apt-get; then
     # A fresh container image ships with empty package lists, which would both

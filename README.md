@@ -171,6 +171,7 @@ Both installers read the same environment variables:
 | `SLICER_LANGUAGE`    | `list` · e.g. `fr-FR` · `es-419` · `pt-BR` · `zh-Hans` | After installing, install the [SlicerLanguagePacks](https://github.com/Slicer/SlicerLanguagePacks) extension along with that language's translation files, verify they load, and switch Slicer's interface to that language. Slicer is launched twice, without splash or main window, to do it (once to install the extension, once to install and verify the translations), so it needs network access and, on Linux, Slicer's runtime libraries plus a display (headless machines can use `xvfb-run`). Set to `list` to only print the available language codes — with how complete each translation is — and exit without installing anything. |
 | `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
+| `XDG_CACHE_HOME`     | *(default: `~/.cache`)* *(Linux/macOS only)*     | Where the verified download is cached, under `slicer-installer/`, so a re-run doesn't download it again. Windows always uses `%LOCALAPPDATA%\slicer-installer`. See [Download cache](#download-cache). |
 
 `SLICER_INSTALL_DIR` defaults per platform:
 
@@ -198,8 +199,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # Install Slicer and its runtime system libraries in a single step.
 #   SLICER_INSTALL_DEPS   run the apt-get command for Slicer's libraries
 #   SLICER_NONINTERACTIVE never prompt
+#   XDG_CACHE_HOME        keep the cached download out of the image (see below)
 RUN curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh \
-    | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 sh
+    | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 XDG_CACHE_HOME=/tmp/slicer-cache sh \
+    && rm -rf /tmp/slicer-cache
 ```
 
 `SLICER_INSTALL_DEPS` picks the right command for the detected package manager
@@ -208,6 +211,22 @@ it works from a bare base image; if none of those package managers is found it
 errors out rather than leaving you with an image that silently lacks the
 libraries. It has no effect on macOS or Windows, where all of Slicer's
 dependencies are bundled.
+
+### Download cache
+
+To make re-runs cheap, the installer keeps the verified package it downloaded in
+`${XDG_CACHE_HOME:-$HOME/.cache}/slicer-installer` (on Windows,
+`%LOCALAPPDATA%\slicer-installer`) and reuses it whenever it still matches the
+published checksum. On a normal machine that's what you want; in an image build
+it is not, because that package is ~1 GB of `.tar.gz` that you already unpacked
+and will never read again — and it lands in the layer permanently.
+
+So point `XDG_CACHE_HOME` at a throwaway directory and delete it **in the same
+`RUN`**, as the Dockerfile above does. Deleting it in a later `RUN` doesn't help:
+the earlier layer still carries the file, and the image still pays for it.
+
+The same applies to any other build that snapshots `$HOME` — VM images, CI
+caches you persist between jobs, `docker commit`.
 
 ## Advanced use of the one-liners
 

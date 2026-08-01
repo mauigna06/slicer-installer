@@ -168,6 +168,7 @@ Both installers read the same environment variables:
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
 | `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed the script exits 0 without downloading anything, so repeated runs converge; set `SLICER_IF_EXISTING=reinstall` to replace it anyway. |
 | `SLICER_INSTALL_DEPS` | set to any value *(Linux only)*                 | Run the package-manager command that installs Slicer's runtime system libraries, instead of only printing it. Uses `sudo` when not already root. For building Docker images and similar automation. |
+| `SLICER_LANGUAGE`    | `list` · e.g. `fr-FR` · `es-419` · `pt-BR` · `zh-Hans` | After installing, install the [SlicerLanguagePacks](https://github.com/Slicer/SlicerLanguagePacks) extension along with that language's translation files, verify they load, and switch Slicer's interface to that language. Slicer is launched twice, without splash or main window, to do it (once to install the extension, once to install and verify the translations), so it needs network access and, on Linux, Slicer's runtime libraries plus a display (headless machines can use `xvfb-run`). Set to `list` to only print the available language codes — with how complete each translation is — and exit without installing anything. |
 | `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 
@@ -250,6 +251,12 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 # Linux: also install Slicer's runtime system libraries (for Docker images / automation)
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 sh
 
+# See which interface languages are available (installs nothing)
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_LANGUAGE=list sh
+
+# Install the SlicerLanguagePacks extension and switch the interface to Spanish
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_LANGUAGE=es-419 sh
+
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
   SLICER_RELEASE_TYPE=preview SLICER_INSTALL_DIR="$HOME/apps/slicer" SLICER_IF_EXISTING=reinstall sh
@@ -289,6 +296,12 @@ $env:SLICER_QUIET="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-in
 
 # Run fully unattended: never prompt (reinstall if the version is already present)
 $env:SLICER_NONINTERACTIVE="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+
+# See which interface languages are available (installs nothing)
+$env:SLICER_LANGUAGE="list"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+
+# Install the SlicerLanguagePacks extension and switch the interface to Spanish
+$env:SLICER_LANGUAGE="es-419"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
 # Combine several overrides at once
 $env:SLICER_RELEASE_TYPE="preview"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_IF_EXISTING="reinstall"; `

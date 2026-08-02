@@ -738,6 +738,18 @@ run_deps_cmd() {
   $1 || err "Dependency installation failed (command: $1)."
 }
 
+# The packages Slicer needs from the distribution, one variable per package
+# manager. The canonical lists are the plain-text files under deps/; this block
+# is rendered from them by tools/sync-deps.sh and CI fails if the two drift, so
+# never edit it by hand. It has to be embedded rather than read from the repo
+# because this script is fetched and piped to sh, with no repo alongside it.
+# --- BEGIN generated dependency lists (tools/sync-deps.sh) --- #
+# Generated from deps/*.txt — edit those files, then run tools/sync-deps.sh.
+DEPS_APT='libglu1-mesa libpulse-mainloop-glib0 libnss3 qt5dxcb-plugin libsm6 libasound2t64|libasound2'
+DEPS_DNF='mesa-libGLU mesa-libGL libnsl libXrender pulseaudio-libs-glib2 nss libXcomposite libXdamage libXrandr ftgl libXcursor libXi libXtst alsa-lib qt5-qtx11extras'
+DEPS_PACMAN='glu nss alsa-lib libxrender libxcomposite libxdamage libxrandr libxcursor libxi libxtst ftgl'
+# --- END generated dependency lists --- #
+
 # Slicer links against a handful of system libraries that, by default, we
 # deliberately do NOT install. Doing so needs root, and asking a `curl | sh`
 # script for sudo is a far bigger ask than the install itself — the whole point
@@ -778,27 +790,33 @@ handle_linux_deps() {
     # mode we only read local lists (apt-cache), which is side-effect free.
     [ -n "$auto" ] && run_deps_cmd "${sudo_prefix}apt-get update"
 
-    # Common Debian/Ubuntu runtime libraries required by Slicer.
-    pkgs="libglu1-mesa libpulse-mainloop-glib0 libnss3 qt5dxcb-plugin libsm6"
-    # ALSA lib was renamed during the 64-bit time_t transition (Ubuntu 24.04+).
-    if apt-cache show libasound2t64 >/dev/null 2>&1; then
-      pkgs="$pkgs libasound2t64"
-    else
-      pkgs="$pkgs libasound2"
-    fi
-    cmd="${sudo_prefix}apt-get install -y $pkgs"
+    # An "a|b" entry in deps/apt.txt names the same library under two package
+    # names — libasound2 was renamed during the 64-bit time_t transition
+    # (Ubuntu 24.04+) — so ask this apt which of the two it knows and keep that
+    # one. Every other entry is passed through unchanged.
+    pkgs=''
+    for pkg in $DEPS_APT; do
+      case "$pkg" in
+        *'|'*)
+          alt_first="${pkg%%|*}"
+          alt_second="${pkg#*|}"
+          if apt-cache show "$alt_first" >/dev/null 2>&1; then
+            pkg="$alt_first"
+          else
+            pkg="$alt_second"
+          fi
+          ;;
+      esac
+      pkgs="$pkgs $pkg"
+    done
+    cmd="${sudo_prefix}apt-get install -y${pkgs}"
   elif have dnf; then
-    pkgs="mesa-libGLU mesa-libGL libnsl libXrender pulseaudio-libs-glib2 nss"
-    pkgs="$pkgs libXcomposite libXdamage libXrandr ftgl libXcursor libXi libXtst"
-    pkgs="$pkgs alsa-lib qt5-qtx11extras"
-    cmd="${sudo_prefix}dnf install -y $pkgs"
+    cmd="${sudo_prefix}dnf install -y $DEPS_DNF"
   elif have pacman; then
-    pkgs="glu nss alsa-lib libxrender libxcomposite libxdamage libxrandr"
-    pkgs="$pkgs libxcursor libxi libxtst ftgl"
     # --noconfirm only when auto-installing, so an unattended build never blocks
     # on a prompt; the printed hint keeps the interactive default for humans.
     if [ -n "$auto" ]; then confirm='--noconfirm '; else confirm=''; fi
-    cmd="${sudo_prefix}pacman -S --needed ${confirm}$pkgs"
+    cmd="${sudo_prefix}pacman -S --needed ${confirm}$DEPS_PACMAN"
   else
     if [ -n "$auto" ]; then
       err "SLICER_INSTALL_DEPS is set but no supported package manager (apt-get, dnf, pacman) was found; install Slicer's runtime libraries manually."

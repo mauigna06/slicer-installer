@@ -1,0 +1,17 @@
+name: deps sync
+
+# The package lists live in deps/*.txt but are embedded into install.sh, which
+# is fetched and piped to sh and so cannot read them at run time. Fail the build
+# if the embedded copy no longer matches the canonical files.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check install.sh matches deps/
+        run: ./tools/sync-deps.sh --check

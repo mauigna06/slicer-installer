@@ -212,6 +212,13 @@ errors out rather than leaving you with an image that silently lacks the
 libraries. It has no effect on macOS or Windows, where all of Slicer's
 dependencies are bundled.
 
+Which packages those are is kept as plain text in [`deps/`](deps/), one file per
+package manager. `install.sh` is piped straight into `sh`, so it cannot read them
+at run time: they are embedded into it by
+[`tools/sync-deps.sh`](tools/sync-deps.sh), which CI re-runs with `--check` to
+fail on any drift between the two. Edit the files in `deps/`, run that script,
+and commit both changes together.
+
 ### Download cache
 
 To make re-runs cheap, the installer keeps the verified package it downloaded in

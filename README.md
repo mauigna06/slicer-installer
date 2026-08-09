@@ -53,6 +53,9 @@ launcher. These scripts do all of that for you in a single command. They:
 - Add a launcher / menu entry so Slicer is ready to start.
 - Notice when the same version is already installed and let you abort, reinstall,
   install side by side, or uninstall it.
+- Leave two small scripts inside the installation for the things that are *not*
+  installing Slicer — its Linux system libraries, and its interface language —
+  so you can run those when you want them. See [After installing](#after-installing).
 
 ## Install
 
@@ -63,10 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 ```
 
 - **Linux** — extracts Slicer into `~/.local/opt`, links a launcher into
-  `~/.local/bin`, and adds a desktop menu entry. It also prints (but never runs)
-  the command that installs Slicer's runtime system libraries, so you decide
-  whether to run it — or set `SLICER_INSTALL_DEPS` to have the installer run it
-  for you (see [Building Docker images](#building-docker-images)).
+  `~/.local/bin`, and adds a desktop menu entry.
 - **macOS** — mounts the `.dmg` and copies `Slicer.app` into `~/Applications`.
 
 ### Windows
@@ -80,6 +80,52 @@ powershell -c "irm https://raw.githubusercontent.com/mauigna06/slicer-installer/
 Runs the official installer silently and per-user (no Administrator prompt). All
 of Slicer's dependencies (Qt, Python, VTK, …) are bundled, so nothing else needs
 installing.
+
+## After installing
+
+Installing Slicer is all the one-liner does. The two things that are *not* that
+— installing Slicer's Linux runtime libraries, and choosing an interface
+language — are separate scripts that live inside the installation, in Slicer's
+own `bin` directory, and you run them when you want them:
+
+| Script | Platform | What it does |
+| ------ | -------- | ------------ |
+| `slicer-deps` | Linux | Prints the package-manager command that installs the system libraries Slicer needs; `--install` runs it |
+| `slicer-language` | Linux · macOS | `list` prints the available interface languages; a code like `es-419` installs it and switches Slicer to it |
+| `slicer-language.ps1` | Windows | The same, for Windows |
+
+```sh
+# Linux — the installer prints this path when it finishes
+~/.local/opt/Slicer/bin/slicer-deps                 # print the command
+~/.local/opt/Slicer/bin/slicer-deps --install       # run it (uses sudo)
+
+~/.local/opt/Slicer/bin/slicer-language list        # what languages exist
+~/.local/opt/Slicer/bin/slicer-language es-419      # install one and switch to it
+```
+
+```sh
+# macOS
+~/Applications/Slicer.app/Contents/bin/slicer-language list
+```
+
+```powershell
+# Windows
+& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" list
+& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" es-419
+```
+
+`slicer-deps` needs root, which is exactly why it is a separate step: the
+installer itself never asks for it and only ever writes under `$HOME`.
+`slicer-language` needs network access, Slicer's runtime libraries, and — on
+Linux — a display; headless machines can supply one with `xvfb-run`. It installs
+the [SlicerLanguagePacks](https://github.com/Slicer/SlicerLanguagePacks)
+extension, downloads and compiles that language's translation files, verifies
+they load, and only then switches Slicer's interface over.
+
+These scripts are maintained in [`inner/`](inner/) and are on their way into the
+Slicer packages themselves ([Slicer#9294](https://github.com/Slicer/Slicer/pull/9294)).
+Until every package ships them, the installer writes its own copies — but only
+when the package does not already contain them, so an upstream copy always wins.
 
 ## When a version is already installed
 
@@ -167,8 +213,6 @@ Both installers read the same environment variables:
 | `SLICER_INSTALL_DIR` | see below                                        | Where to install Slicer (must be writable without root).                 |
 | `SLICER_IF_EXISTING` | `prompt` *(default)* · `abort` · `reinstall` · `uninstall` | What to do when that version is already installed.             |
 | `SLICER_NONINTERACTIVE` | set to any value                              | Never prompt (for automations / CI). If the target version is already installed the script exits 0 without downloading anything, so repeated runs converge; set `SLICER_IF_EXISTING=reinstall` to replace it anyway. |
-| `SLICER_INSTALL_DEPS` | set to any value *(Linux only)*                 | Run the package-manager command that installs Slicer's runtime system libraries, instead of only printing it. Uses `sudo` when not already root. For building Docker images and similar automation. |
-| `SLICER_LANGUAGE`    | `list` · e.g. `fr-FR` · `es-419` · `pt-BR` · `zh-Hans` | After installing, install the [SlicerLanguagePacks](https://github.com/Slicer/SlicerLanguagePacks) extension along with that language's translation files, verify they load, and switch Slicer's interface to that language. Slicer is launched twice, without splash or main window, to do it (once to install the extension, once to install and verify the translations), so it needs network access and, on Linux, Slicer's runtime libraries plus a display (headless machines can use `xvfb-run`). Set to `list` to only print the available language codes — with how complete each translation is — and exit without installing anything. |
 | `SLICER_QUIET`       | set to any value                                 | Silence progress messages, the logo and the download bar; warnings, errors and prompts still show. |
 | `NO_COLOR`           | set to any value                                 | Disable colored output (and the logo).                                   |
 | `XDG_CACHE_HOME`     | *(default: `~/.cache`)* *(Linux/macOS only)*     | Where the verified download is cached, under `slicer-installer/`, so a re-run doesn't download it again. Windows always uses `%LOCALAPPDATA%\slicer-installer`. See [Download cache](#download-cache). |
@@ -182,12 +226,13 @@ Both installers read the same environment variables:
 
 ## Building Docker images
 
-On Linux the installer normally only *prints* the command that installs Slicer's
-runtime system libraries, because doing so needs root and this script otherwise
-writes only under `$HOME`. When you're building a container image that's exactly
-what you want automated, so set `SLICER_INSTALL_DEPS` to have the installer run
-that command for you (using `sudo` only when not already root). Combine it with
-`SLICER_NONINTERACTIVE` so the "already installed" prompt never stops the build:
+Installing Slicer and installing its runtime system libraries are two steps: the
+second needs root, and the installer never asks for it. In an image build you
+are already root and automating both is exactly the point, so run them one after
+the other. Set `SLICER_NONINTERACTIVE` so the "already installed" prompt never
+stops the build, and pass `--install --yes` to `slicer-deps` so it installs
+rather than prints, and fails fast instead of waiting for a `sudo` password
+nothing can type:
 
 ```dockerfile
 FROM ubuntu:24.04
@@ -196,28 +241,36 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Slicer and its runtime system libraries in a single step.
-#   SLICER_INSTALL_DEPS   run the apt-get command for Slicer's libraries
+# 1. Install Slicer.
 #   SLICER_NONINTERACTIVE never prompt
 #   XDG_CACHE_HOME        keep the cached download out of the image (see below)
+# 2. Install the system libraries it needs, with the script step 1 left behind
+#    in Slicer's bin directory.
 RUN curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh \
-    | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 XDG_CACHE_HOME=/tmp/slicer-cache sh \
+    | SLICER_NONINTERACTIVE=1 XDG_CACHE_HOME=/tmp/slicer-cache sh \
+    && "$HOME/.local/opt/Slicer/bin/slicer-deps" --install --yes \
     && rm -rf /tmp/slicer-cache
 ```
 
-`SLICER_INSTALL_DEPS` picks the right command for the detected package manager
+`slicer-deps` picks the right command for the detected package manager
 (`apt-get`, `dnf` or `pacman`) and refreshes the package lists first on `apt`, so
 it works from a bare base image; if none of those package managers is found it
 errors out rather than leaving you with an image that silently lacks the
-libraries. It has no effect on macOS or Windows, where all of Slicer's
+libraries. There is no equivalent on macOS or Windows, where all of Slicer's
 dependencies are bundled.
 
+Note that the two steps fail at different points than they used to: a missing
+package manager or an unusable `sudo` is now reported *after* Slicer has been
+downloaded and installed, because `slicer-deps` runs as its own command. The
+build still fails — just one layer later.
+
 Which packages those are is kept as plain text in [`deps/`](deps/), one file per
-package manager. `install.sh` is piped straight into `sh`, so it cannot read them
-at run time: they are embedded into it by
-[`tools/sync-deps.sh`](tools/sync-deps.sh), which CI re-runs with `--check` to
-fail on any drift between the two. Edit the files in `deps/`, run that script,
-and commit both changes together.
+package manager. Neither `slicer-deps` nor `install.sh` can read them at run
+time — one ships inside a Slicer installation, the other is piped straight into
+`sh` — so they are embedded in two hops (`deps/*.txt` → `inner/slicer-deps` →
+`install.sh`) by [`tools/sync-embedded.sh`](tools/sync-embedded.sh), which CI
+re-runs with `--check` to fail on any drift. Edit the files in `deps/`, run that
+script, and commit all the changes together.
 
 ### Download cache
 
@@ -274,14 +327,16 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 # Run fully unattended: never prompt (reinstall if the version is already present)
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_NONINTERACTIVE=1 sh
 
-# Linux: also install Slicer's runtime system libraries (for Docker images / automation)
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_INSTALL_DEPS=1 SLICER_NONINTERACTIVE=1 sh
+# Linux: also install Slicer's runtime system libraries (for Docker images / automation).
+# A second step now, not an override -- see "After installing".
+curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_NONINTERACTIVE=1 sh
+"$HOME/.local/opt/Slicer/bin/slicer-deps" --install --yes
 
 # See which interface languages are available (installs nothing)
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_LANGUAGE=list sh
+"$HOME/.local/opt/Slicer/bin/slicer-language" list
 
 # Install the SlicerLanguagePacks extension and switch the interface to Spanish
-curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | SLICER_LANGUAGE=es-419 sh
+"$HOME/.local/opt/Slicer/bin/slicer-language" es-419
 
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
@@ -323,11 +378,12 @@ $env:SLICER_QUIET="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-in
 # Run fully unattended: never prompt (reinstall if the version is already present)
 $env:SLICER_NONINTERACTIVE="1"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
 
-# See which interface languages are available (installs nothing)
-$env:SLICER_LANGUAGE="list"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+# See which interface languages are available (installs nothing).
+# A separate script now, not an override -- see "After installing".
+& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" list
 
 # Install the SlicerLanguagePacks extension and switch the interface to Spanish
-$env:SLICER_LANGUAGE="es-419"; irm https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.ps1 | iex
+& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" es-419
 
 # Combine several overrides at once
 $env:SLICER_RELEASE_TYPE="preview"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_IF_EXISTING="reinstall"; `

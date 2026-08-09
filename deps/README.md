@@ -19,17 +19,32 @@ package manager, one package per line.
   one the package manager actually knows about. Only `apt.txt` uses this, for
   the `libasound2` → `libasound2t64` rename.
 
-## How these reach the installer
+## How these reach the user
 
-`install.sh` is fetched and piped to `sh` in one line, so it cannot read these
-files at run time — it has to be self-contained. Instead the lists are embedded
-into it, between the `BEGIN/END generated dependency lists` markers, by:
+The script that installs these packages is [`inner/slicer-deps`](../inner/slicer-deps),
+which lives inside the Slicer installation and is run by the user afterwards —
+installing distribution packages needs root, so it is never part of installing
+Slicer itself.
 
-```sh
-tools/sync-deps.sh
+Neither that script nor `install.sh` can read this directory at run time: one
+ships inside a Slicer package, the other is fetched and piped to `sh` in one
+line. So the lists are embedded, in two hops:
+
+```
+deps/*.txt  ->  inner/slicer-deps  ->  install.sh
 ```
 
-Run that after editing any file here and commit both changes together.
-`tools/sync-deps.sh --check` re-renders the block and fails if it differs from
-what is committed; CI runs it on every push, so the embedded copy cannot drift
-away from these files.
+The first hop fills the `BEGIN/END generated dependency lists` markers in
+`inner/slicer-deps`; the second carries that whole script into the
+`BEGIN/END generated inner scripts` markers of `install.sh`, which writes it out
+at install time for packages that do not ship it themselves. Both hops are done
+by:
+
+```sh
+tools/sync-embedded.sh
+```
+
+Run that after editing any file here and commit all the changes together.
+`tools/sync-embedded.sh --check` re-renders every block and fails if any differs
+from what is committed; CI runs it on every push, so the embedded copies cannot
+drift away from these files.

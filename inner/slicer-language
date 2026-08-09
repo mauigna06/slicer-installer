@@ -315,12 +315,18 @@ def main():
 slicer.util.exit(main())
 EOF
 
+  # Assembled in pieces to keep the source lines short.
+  ext_error="Could not install SlicerLanguagePacks. If Slicer failed to start"
+  ext_error="$ext_error for lack of system libraries, install them first (run"
+  ext_error="$ext_error slicer-deps); otherwise launch Slicer and use its"
+  ext_error="$ext_error Extensions Manager."
+
   # Slicer's own startup chatter goes to stdout; drop it and keep stderr, where
   # both Slicer and the scripts above report actual problems.
   log "Installing the SlicerLanguagePacks extension…"
   # shellcheck disable=SC2086
   $runner "$exe" --no-splash --no-main-window --python-script "$ext_pyfile" >/dev/null \
-    || err "Could not install SlicerLanguagePacks. If Slicer failed to start for lack of system libraries, install them first (run slicer-deps); otherwise launch Slicer and use its Extensions Manager."
+    || err "$ext_error"
 
   log "Downloading the '$lang' translation and switching Slicer to it…"
   # shellcheck disable=SC2086

@@ -21,8 +21,9 @@ package manager, one package per line.
 
 ## How these reach the user
 
-The script that installs these packages is [`inner/slicer-deps`](../inner/slicer-deps),
-which lives inside the Slicer installation and is run by the user afterwards —
+The script that installs these packages is `slicer-deps` (in `inner/` in the
+slicer-installer repository, beside `install.sh` in Slicer's source tree), which
+lives inside the Slicer installation and is run by the user afterwards —
 installing distribution packages needs root, so it is never part of installing
 Slicer itself.
 
@@ -31,11 +32,11 @@ ships inside a Slicer package, the other is fetched and piped to `sh` in one
 line. So the lists are embedded, in two hops:
 
 ```
-deps/*.txt  ->  inner/slicer-deps  ->  install.sh
+deps/*.txt  ->  slicer-deps  ->  install.sh
 ```
 
 The first hop fills the `BEGIN/END generated dependency lists` markers in
-`inner/slicer-deps`; the second carries that whole script into the
+`slicer-deps`; the second carries that whole script into the
 `BEGIN/END generated inner scripts` markers of `install.sh`, which writes it out
 at install time for packages that do not ship it themselves. Both hops are done
 by:
@@ -46,5 +47,5 @@ tools/sync-embedded.sh
 
 Run that after editing any file here and commit all the changes together.
 `tools/sync-embedded.sh --check` re-renders every block and fails if any differs
-from what is committed; CI runs it on every push, so the embedded copies cannot
-drift away from these files.
+from what is committed; CI runs it on every change to these scripts, so the
+embedded copies cannot drift away from these files.

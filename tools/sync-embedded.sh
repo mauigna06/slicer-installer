@@ -10,10 +10,16 @@
 # fails when a committed block no longer matches, so the copies cannot drift.
 #
 # Two stages, in order (stage 1 feeds stage 2):
-#   1. deps/*.txt                -> inner/slicer-deps
-#   2. inner/slicer-language     -> install.sh
-#      inner/slicer-deps         -> install.sh
-#      inner/slicer-language.ps1 -> install.ps1
+#   1. deps/*.txt                 -> inner/slicer-deps
+#   2. inner/slicer-language      -> install.sh
+#      inner/slicer-deps          -> install.sh
+#      inner/slicer-shortcuts     -> install.sh
+#      inner/slicer-language.ps1  -> install.ps1
+#      inner/slicer-shortcuts.ps1 -> install.ps1
+#
+# The same file also runs inside Slicer's source tree, where these scripts are
+# vendored into Utilities/Scripts/SlicerInstallers: there the inner scripts sit
+# beside install.sh instead of in inner/, and everything else is laid out alike.
 #
 # Usage:
 #   tools/sync-embedded.sh            rewrite every generated block
@@ -23,6 +29,7 @@ set -eu
 repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 deps_dir="$repo_root/deps"
 inner_dir="$repo_root/inner"
+[ -d "$inner_dir" ] || inner_dir="$repo_root"
 
 deps_begin='# --- BEGIN generated dependency lists (tools/sync-embedded.sh) --- #'
 deps_end='# --- END generated dependency lists --- #'
@@ -92,8 +99,8 @@ assert_embeddable() {
 # in a quoted heredoc. The closing delimiter has to sit at column 0, so the
 # body is emitted unindented.
 render_inner_sh() {
-  printf '%s\n' '# Generated from inner/ — edit those files, then run tools/sync-embedded.sh.'
-  for name in slicer-language slicer-deps; do
+  printf '%s\n' '# Generated from the inner scripts — edit those files, then run tools/sync-embedded.sh.'
+  for name in slicer-language slicer-deps slicer-shortcuts; do
     src="$inner_dir/$name"
     assert_embeddable "$src"
     printf 'write_inner_%s() {\n' "$(printf '%s' "$name" | tr - _)"
@@ -111,15 +118,17 @@ render_inner_sh() {
 # logo already uses in install.ps1 — which needs only ' doubled and has no
 # delimiter to collide with.
 render_inner_ps1() {
-  printf '%s\n' '# Generated from inner/ -- edit those files, then run tools/sync-embedded.sh.'
-  src="$inner_dir/slicer-language.ps1"
-  [ -f "$src" ] || die "missing inner script: $src"
-  # $innerLanguagePs1 is a PowerShell variable being written out verbatim, not a
-  # shell expansion.
-  # shellcheck disable=SC2016
-  printf '$innerLanguagePs1 = @(\n'
-  awk -v q="'" '{ gsub(q, q q); printf "    %s%s%s\n", q, $0, q }' "$src"
-  printf '%s\n' ') -join "`n"'
+  printf '%s\n' '# Generated from the inner scripts -- edit those files, then run tools/sync-embedded.sh.'
+  for pair in slicer-language.ps1:innerLanguagePs1 slicer-shortcuts.ps1:innerShortcutsPs1; do
+    src="$inner_dir/${pair%%:*}"
+    [ -f "$src" ] || die "missing inner script: $src"
+    # The $ starts a PowerShell variable being written out verbatim, not a
+    # shell expansion.
+    # shellcheck disable=SC2016
+    printf '$%s = @(\n' "${pair#*:}"
+    awk -v q="'" '{ gsub(q, q q); printf "    %s%s%s\n", q, $0, q }' "$src"
+    printf '%s\n' ') -join "`n"'
+  done
 }
 
 # ---------------------------------------------------------------------------- #

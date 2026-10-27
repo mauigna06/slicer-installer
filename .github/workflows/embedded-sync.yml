@@ -22,17 +22,17 @@ jobs:
       # script would otherwise only surface once it is embedded and run.
       - name: Shell syntax
         run: |
-          for f in install.sh inner/slicer-deps inner/slicer-language tools/sync-embedded.sh; do
+          for f in install.sh inner/slicer-deps inner/slicer-language inner/slicer-shortcuts tools/sync-embedded.sh; do
             sh -n "$f"
           done
 
       - name: shellcheck
-        run: shellcheck -s sh install.sh inner/slicer-deps inner/slicer-language tools/sync-embedded.sh
+        run: shellcheck -s sh install.sh inner/slicer-deps inner/slicer-language inner/slicer-shortcuts tools/sync-embedded.sh
 
       - name: PowerShell syntax
         shell: pwsh
         run: |
-          foreach ($f in @('install.ps1', 'inner/slicer-language.ps1')) {
+          foreach ($f in @('install.ps1', 'inner/slicer-language.ps1', 'inner/slicer-shortcuts.ps1')) {
               $errors = $null
               [System.Management.Automation.Language.Parser]::ParseFile(
                   (Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null

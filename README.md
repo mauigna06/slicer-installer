@@ -53,11 +53,18 @@ launcher. These scripts do all of that for you in a single command. They:
 - Add a launcher / menu entry so Slicer is ready to start.
 - Notice when the same version is already installed and let you abort, reinstall,
   install side by side, or uninstall it.
-- Leave two small scripts inside the installation for the things that are *not*
-  installing Slicer — its Linux system libraries, and its interface language —
-  so you can run those when you want them. See [After installing](#after-installing).
+- Leave small scripts inside the installation for the things that are *not*
+  installing Slicer — its Linux system libraries, its interface language, and a
+  desktop icon and dock entry — so you can run those when you want them. See
+  [After installing](#after-installing).
 
 ## Install
+
+> Once [Slicer#9294](https://github.com/Slicer/Slicer/pull/9294) is merged and
+> the download server serves them, the official one-liners are
+> `curl -fsSL https://download.slicer.org/install.sh | sh` and
+> `powershell -c "irm https://download.slicer.org/install.ps1 | iex"`. Until
+> then, use the URLs below.
 
 ### Linux / macOS
 
@@ -83,16 +90,19 @@ installing.
 
 ## After installing
 
-Installing Slicer is all the one-liner does. The two things that are *not* that
-— installing Slicer's Linux runtime libraries, and choosing an interface
-language — are separate scripts that live inside the installation, in Slicer's
-own `bin` directory, and you run them when you want them:
+Installing Slicer is all the one-liner does. The things that are *not* that —
+installing Slicer's Linux runtime libraries, choosing an interface language, and
+putting Slicer on the desktop and the dock — are separate scripts that live
+inside the installation, in Slicer's own `bin` directory, and you run them when
+you want them:
 
 | Script | Platform | What it does |
 | ------ | -------- | ------------ |
 | `slicer-deps` | Linux | Prints the package-manager command that installs the system libraries Slicer needs; `--install` runs it |
 | `slicer-language` | Linux · macOS | `list` prints the available interface languages; a code like `es-419` installs it and switches Slicer to it |
 | `slicer-language.ps1` | Windows | The same, for Windows |
+| `slicer-shortcuts` | Linux · macOS | Adds a desktop icon and pins Slicer to the dock; `--desktop` or `--dock` for just one, `--remove` to undo |
+| `slicer-shortcuts.ps1` | Windows | Adds a desktop shortcut, and shows how to pin Slicer to the taskbar; `-Remove` to undo |
 
 ```sh
 # Linux — the installer prints this path when it finishes
@@ -101,18 +111,43 @@ own `bin` directory, and you run them when you want them:
 
 ~/.local/opt/Slicer/bin/slicer-language list        # what languages exist
 ~/.local/opt/Slicer/bin/slicer-language es-419      # install one and switch to it
+
+~/.local/opt/Slicer/bin/slicer-shortcuts            # desktop icon + dock
 ```
 
 ```sh
 # macOS
 ~/Applications/Slicer.app/Contents/bin/slicer-language list
+~/Applications/Slicer.app/Contents/bin/slicer-shortcuts
 ```
 
 ```powershell
-# Windows
-& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" list
-& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" es-419
+# Windows -- its default execution policy blocks running a .ps1 file by name,
+# so let this one run through
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" list
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" es-419
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-shortcuts.ps1"
 ```
+
+What `slicer-shortcuts` can automate depends on the desktop:
+
+- **Linux** — the desktop icon goes into your desktop folder (as `xdg-user-dir`
+  reports it) and is marked trusted, so GNOME and Xfce launch it without asking.
+  The dock is pinned on GNOME and the desktops built on it (Ubuntu Dock, Dash to
+  Dock); elsewhere — KDE Plasma, Xfce, Cinnamon — the script says how to pin
+  Slicer from the app menu, since each keeps its panel launchers in a format of
+  its own.
+- **macOS** — the desktop gets a link to `Slicer.app`, and the Dock a tile for
+  it (the Dock restarts to show it).
+- **Windows** — the desktop shortcut is named like the one Slicer's own
+  installer would create (`Slicer 5.12.3`), so uninstalling Slicer removes it.
+  The taskbar cannot be automated: Windows reserves pinning to the user and
+  offers programs no supported way to do it, so the script shows the two
+  clicks it takes.
+
+Each one acts on the installation it sits in, and `--remove` / `-Remove` only
+takes away what launches that installation. Uninstalling through the installer
+runs it for you.
 
 `slicer-deps` needs root, which is exactly why it is a separate step: the
 installer itself never asks for it and only ever writes under `$HOME`.
@@ -126,6 +161,11 @@ These scripts are maintained in [`inner/`](inner/) and are on their way into the
 Slicer packages themselves ([Slicer#9294](https://github.com/Slicer/Slicer/pull/9294)).
 Until every package ships them, the installer writes its own copies — but only
 when the package does not already contain them, so an upstream copy always wins.
+
+Once that pull request is merged, Slicer's `Utilities/Scripts/SlicerInstallers`
+is the canonical home of everything here — installers, inner scripts, `deps/`
+lists and `tools/sync-embedded.sh` — and this repository mirrors it. The same
+generator runs in both trees.
 
 ## When a version is already installed
 
@@ -338,6 +378,9 @@ curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/ins
 # Install the SlicerLanguagePacks extension and switch the interface to Spanish
 "$HOME/.local/opt/Slicer/bin/slicer-language" es-419
 
+# Add a desktop icon and pin Slicer to the dock (or just one: --desktop, --dock)
+"$HOME/.local/opt/Slicer/bin/slicer-shortcuts"
+
 # Combine several overrides at once
 curl -fsSL https://raw.githubusercontent.com/mauigna06/slicer-installer/main/install.sh | \
   SLICER_RELEASE_TYPE=preview SLICER_INSTALL_DIR="$HOME/apps/slicer" SLICER_IF_EXISTING=reinstall sh
@@ -380,10 +423,13 @@ $env:SLICER_NONINTERACTIVE="1"; irm https://raw.githubusercontent.com/mauigna06/
 
 # See which interface languages are available (installs nothing).
 # A separate script now, not an override -- see "After installing".
-& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" list
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" list
 
 # Install the SlicerLanguagePacks extension and switch the interface to Spanish
-& "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" es-419
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-language.ps1" es-419
+
+# Add a desktop shortcut (and see how to pin Slicer to the taskbar)
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\NA-MIC\Slicer 5.12.3\bin\slicer-shortcuts.ps1"
 
 # Combine several overrides at once
 $env:SLICER_RELEASE_TYPE="preview"; $env:SLICER_INSTALL_DIR="C:\Slicer"; $env:SLICER_IF_EXISTING="reinstall"; `
